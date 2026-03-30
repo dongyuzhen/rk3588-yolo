@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/radxa/project/build -name *.cpp -o -name *.c)"
+    ]
+  }
+}

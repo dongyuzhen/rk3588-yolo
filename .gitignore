@@ -1,0 +1,51 @@
+# 编译输出
+build/
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+
+# CMake 生成文件
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 视频文件
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.yuv
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# 模型文件
+# model/*.onnx
+# model/*.weights
+# model/*.pt
+
+# 其他
+*.bak
+*.backup
