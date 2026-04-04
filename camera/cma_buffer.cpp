@@ -14,6 +14,11 @@ CmaBuffer::~CmaBuffer() {
     release();
 }
 
+CmaBufferPool::CmaBufferPool(int fd)
+{
+    heap_fd_ = fd;
+}
+
 CmaBuffer::CmaBuffer(CmaBuffer&& other) noexcept {
     // 转移所有权：接管 other 的 fd/addr/size
     fd_ = other.fd_;
@@ -125,16 +130,17 @@ bool CmaBuffer::syncEndRead() const {
 
 CmaBufferPool::~CmaBufferPool() {
     clear();
+    close(heap_fd_);
 }
 
-bool CmaBufferPool::init(size_t count, int heap_fd, size_t each_size, const std::string& tag_prefix) {
+bool CmaBufferPool::init(size_t count,size_t each_size, const std::string& tag_prefix) {
     // 允许重复 init：先清空旧池
     clear();
 
     buffers_.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         CmaBuffer b;
-        if (!b.allocate(heap_fd, each_size, tag_prefix + "_" + std::to_string(i))) {
+        if (!b.allocate(heap_fd_, each_size, tag_prefix + "_" + std::to_string(i))) {
             // 任一失败，整体回滚
             clear();
             return false;

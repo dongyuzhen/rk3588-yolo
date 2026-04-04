@@ -9,6 +9,14 @@
 
 #include "cma_buffer.h"
 
+typedef struct FramePacket {
+    const uint8_t* data{nullptr}; // 指向 CMA 映射地址，直到 releaseFrame 前有效，已经零拷贝到用户态
+    size_t bytes_used{0};           // 实际数据长度（可能小于缓冲大小）
+    uint32_t buffer_index{0};       // 对应 V4L2 buffer slot index/后续是captureFrame/releaseFrame的索引
+    int dmabuf_fd{-1};                  // 对应 CMA buffer 的 dmabuf fd
+    bool valid{false};              //包是否有效（captureFrame 成功时为 true，失败或 releaseFrame 后为 false）
+} FramePacket_t;
+
 // V4L2 相机封装（DMABUF/CMA 版本）：
 // - V4L2 驱动侧使用 V4L2_MEMORY_DMABUF
 // - 用户态通过 CmaBufferPool 管理采集缓冲
@@ -17,14 +25,6 @@ class V4L2Camera {
 public:
     // 单帧数据描述。
     // 注意：data 指向内部 CMA 缓冲映射地址，直到 releaseFrame 前有效。
-    struct FramePacket {
-        const uint8_t* data{nullptr};
-        size_t bytes_used{0};
-        uint32_t buffer_index{0};
-        int dmabuf_fd{-1};
-        uint64_t driver_timestamp_us{0};
-        bool valid{false};
-    };
 
     V4L2Camera();
     ~V4L2Camera();
@@ -38,7 +38,7 @@ public:
     // 3) 申请 V4L2 DMABUF 队列
     // 4) 从 /dev/dma_heap/cma 分配同等数量的 CmaBuffer
     // 5) 全量 QBUF 入队
-    bool init(const std::string& dev_path, int width, int height, int buffer_num, uint32_t pixfmt = V4L2_PIX_FMT_MJPEG);
+    bool init(const std::string& dev_path, int width, int height, int buffer_num, uint32_t pixfmt = V4L2_PIX_FMT_MJPEG, CmaBufferPool* pool = nullptr);
 
     // 启动采集流
     bool startStreaming();
@@ -73,6 +73,6 @@ private:
     bool is_streaming_{false};
 
     // 采集缓冲池：一项对应一个 V4L2 buffer slot
-    CmaBufferPool cma_pool_;
+    CmaBufferPool* cma_pool_;
     std::vector<BufferState> buffer_states_;
 };

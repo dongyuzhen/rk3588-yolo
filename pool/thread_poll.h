@@ -19,7 +19,6 @@ using namespace std;
 using namespace cv;
 
 struct ProcessResult {
-    cv::Mat processed_img;
     detect_result_group_t detection_results;
     bool success = false;
     std::string error_msg;
@@ -33,8 +32,8 @@ public:
     ~ThreadPoll();
 
     // 提交异步推理任务（新的正确用法），返回 future 来获取结果
-    std::future<ProcessResult> submit_task_async(int index, cv::Mat img);
-
+    //std::future<ProcessResult> submit_task_async(int index, cv::Mat img);
+    std::future<ProcessResult> submit_task_async(int index, int dmabuf_fd);   //改成传入v4l2的fd
 private:
     // 工作线程函数：不断从 tasks 队列里取 std::packaged_task 并执行
     void worker(int id);

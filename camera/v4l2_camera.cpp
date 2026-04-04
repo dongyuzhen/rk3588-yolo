@@ -16,9 +16,15 @@ V4L2Camera::~V4L2Camera() {
     closeDevice();
 }
 
-bool V4L2Camera::init(const std::string& dev_path, int width, int height, int buffer_num, uint32_t pixfmt) {
+bool V4L2Camera::init(const std::string& dev_path, int width, int height, int buffer_num, uint32_t pixfmt , CmaBufferPool* pool ) {
     // 支持重复初始化：先清理旧状态
     closeDevice();
+
+    this->width_ = width;
+    this->height_ = height;
+    this->buffer_num_ = buffer_num;
+    this->pixfmt_ = pixfmt;
+    this->cma_pool_ = pool;
 
     // 非阻塞打开视频设备
     fd_ = open(dev_path.c_str(), O_RDWR | O_NONBLOCK);
@@ -26,7 +32,7 @@ bool V4L2Camera::init(const std::string& dev_path, int width, int height, int bu
         perror("open camera");
         return false;
     }
-
+    
     // 校验设备能力（必须支持 capture + streaming）
     v4l2_capability cap{};
     if (ioctl(fd_, VIDIOC_QUERYCAP, &cap) < 0) {
@@ -41,17 +47,12 @@ bool V4L2Camera::init(const std::string& dev_path, int width, int height, int bu
         return false;
     }
 
-    width_ = width;
-    height_ = height;
-    buffer_num_ = buffer_num;
-    pixfmt_ = pixfmt;
-
     // 配置采集格式
     v4l2_format fmt{};
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width = width;
-    fmt.fmt.pix.height = height;
-    fmt.fmt.pix.pixelformat = pixfmt;
+    fmt.fmt.pix.width = this->width_;
+    fmt.fmt.pix.height = this->height_;
+    fmt.fmt.pix.pixelformat = this->pixfmt_;
     fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
     if (ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0) {
@@ -78,19 +79,13 @@ bool V4L2Camera::init(const std::string& dev_path, int width, int height, int bu
         closeDevice();
         return false;
     }
-
+    //好像没有必要
     buffer_num_ = static_cast<int>(req.count);
 
-    // 打开 CMA heap（用于分配连续物理内存）
-    heap_fd_ = open("/dev/dma_heap/cma", O_RDWR);
-    if (heap_fd_ < 0) {
-        perror("open /dev/dma_heap/cma");
-        closeDevice();
-        return false;
-    }
+
 
     // 建立采集缓冲池：每个 V4L2 slot 对应一个 CmaBuffer
-    if (!cma_pool_.init(static_cast<size_t>(buffer_num_), heap_fd_, fmt.fmt.pix.sizeimage, "capture")) {
+    if (!this->cma_pool_->init(static_cast<size_t>(buffer_num_),fmt.fmt.pix.sizeimage, "capture")) {
         std::cerr << "[V4L2] failed to init cma pool\n";
         closeDevice();
         return false;
@@ -108,9 +103,13 @@ bool V4L2Camera::init(const std::string& dev_path, int width, int height, int bu
     return true;
 }
 
+
+
+
+
 bool V4L2Camera::queueAllBuffers() {
     for (int i = 0; i < buffer_num_; ++i) {
-        CmaBuffer& b = cma_pool_.at(static_cast<size_t>(i));
+        CmaBuffer& b = this->cma_pool_->at(static_cast<size_t>(i));
 
         v4l2_buffer buf{};
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -129,7 +128,6 @@ bool V4L2Camera::queueAllBuffers() {
 
     return true;
 }
-
 bool V4L2Camera::startStreaming() {
     if (fd_ < 0) return false;
     if (is_streaming_) return true;
@@ -179,12 +177,12 @@ bool V4L2Camera::captureFrame(FramePacket& out_packet, int poll_timeout_ms) {
         return false;
     }
 
-    if (buf.index >= cma_pool_.size()) {
+    if (buf.index >= this->cma_pool_->size()) {
         std::cerr << "[V4L2] invalid buffer index: " << buf.index << "\n";
         return false;
     }
 
-    CmaBuffer& b = cma_pool_.at(buf.index);
+    CmaBuffer& b = this->cma_pool_->at(buf.index);
     if (!b.valid()) {
         std::cerr << "[V4L2] invalid cma buffer at index " << buf.index << "\n";
         return false;
@@ -202,8 +200,6 @@ bool V4L2Camera::captureFrame(FramePacket& out_packet, int poll_timeout_ms) {
     out_packet.bytes_used = static_cast<size_t>(buf.bytesused);
     out_packet.buffer_index = buf.index;
     out_packet.dmabuf_fd = b.fd();
-    out_packet.driver_timestamp_us =
-        static_cast<uint64_t>(buf.timestamp.tv_sec) * 1000000ULL + static_cast<uint64_t>(buf.timestamp.tv_usec);
     out_packet.valid = true;
 
     return true;
@@ -211,10 +207,10 @@ bool V4L2Camera::captureFrame(FramePacket& out_packet, int poll_timeout_ms) {
 
 bool V4L2Camera::releaseFrame(const FramePacket& packet) {
     if (fd_ < 0 || !packet.valid) return false;
-    if (packet.buffer_index >= cma_pool_.size()) return false;
+    if (packet.buffer_index >= this->cma_pool_->size()) return false;
 
-    CmaBuffer& b = cma_pool_.at(packet.buffer_index);
-    BufferState& state = buffer_states_[packet.buffer_index];
+    CmaBuffer& b = this->cma_pool_->at(packet.buffer_index);
+    BufferState& state = this->buffer_states_[packet.buffer_index];
 
     // 必须是“已 DQ 未 Q”的帧才能释放
     if (!state.dequeued || !b.valid()) return false;
@@ -259,7 +255,7 @@ void V4L2Camera::closeDevice() {
         // 先停流，再释放缓冲，最后关设备
         stopStreaming();
 
-        cma_pool_.clear();
+        cma_pool_=nullptr;
         buffer_states_.clear();
 
         close(fd_);

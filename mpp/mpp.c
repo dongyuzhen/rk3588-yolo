@@ -656,3 +656,134 @@ static _Bool process_image(uint8_t *p, int size, MppContext *mpp_enc_data)
     return 1;
 }
 
+/**
+ * @brief 零拷贝编码：直接从外部 dmabuf fd 导入输入帧
+ *
+ * 与 process_image() 的区别：不做 memcpy，
+ * 而是通过 mpp_buffer_import_with_tag 把外部 CMA fd 包装成
+ * MppBuffer，让编码器直接读取该内存，实现跨驱动零拷贝。
+ *
+ * @param fd            NV12 数据的 dmabuf fd
+ * @param size          帧字节数（hor_stride * ver_stride * 3/2）
+ * @param mpp_enc_data  MPP 上下文
+ * @return _Bool        成功返回 true，失败返回 false
+ */
+_Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data)
+{
+    MPP_RET ret = MPP_OK;
+    MppFrame  frame  = NULL;
+    MppPacket packet = NULL;
+    MppMeta   meta   = NULL;
+    MppBuffer frm_buf_ext = NULL;
+    MppBufferGroup ext_grp = NULL;
+    RK_U32 eoi = 1;
+    static int frame_log_counter = 0;
+
+    if (!mpp_enc_data || !mpp_enc_data->pkt_buf) {
+        printf("[mpp] pkt_buf is NULL\n");
+        return 0;
+    }
+
+    // 1. 创建 EXT_DMA 类型的 external group，专用于外部 fd import
+    ret = mpp_buffer_group_get_external(&ext_grp, MPP_BUFFER_TYPE_EXT_DMA);
+    if (ret || !ext_grp) {
+        printf("[mpp] mpp_buffer_group_get_external failed, ret=%d\n", ret);
+        return 0;
+    }
+
+    // 2. 把外部 dmabuf fd 导入为 MppBuffer（不拷贝数据）
+    MppBufferInfo buf_info;
+    memset(&buf_info, 0, sizeof(buf_info));
+    buf_info.type  = MPP_BUFFER_TYPE_EXT_DMA;
+    buf_info.fd    = fd;
+    buf_info.size  = (size_t)size;
+    buf_info.ptr   = NULL;
+
+    ret = mpp_buffer_import_with_tag(ext_grp, &buf_info, &frm_buf_ext,
+                                     "nv12_ext_fd", __FUNCTION__);
+    if (ret || !frm_buf_ext) {
+        printf("[mpp] mpp_buffer_import_with_tag failed, ret=%d\n", ret);
+        mpp_buffer_group_put(ext_grp);
+        return 0;
+    }
+
+    // 2. 初始化并设置编码帧，直接绑定外部 buffer
+    ret = mpp_frame_init(&frame);
+    if (ret) {
+        printf("[mpp] mpp_frame_init failed\n");
+        mpp_buffer_put(frm_buf_ext);
+        return 0;
+    }
+
+    mpp_frame_set_width(frame,      mpp_enc_data->width);
+    mpp_frame_set_height(frame,     mpp_enc_data->height);
+    mpp_frame_set_hor_stride(frame, mpp_enc_data->hor_stride);
+    mpp_frame_set_ver_stride(frame, mpp_enc_data->ver_stride);
+    mpp_frame_set_fmt(frame,        mpp_enc_data->fmt);
+    mpp_frame_set_buffer(frame,     frm_buf_ext);   // ← 直接用外部 fd 的 buffer
+    mpp_frame_set_eos(frame,        mpp_enc_data->frm_eos);
+
+    // 3. 绑定输出 packet
+    meta = mpp_frame_get_meta(frame);
+    mpp_packet_init_with_buffer(&packet, mpp_enc_data->pkt_buf);
+    mpp_packet_set_length(packet, 0);
+    mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
+
+    // 4. 送帧编码
+    ret = mpp_enc_data->mpi->encode_put_frame(mpp_enc_data->ctx, frame);
+    if (ret) {
+        printf("[mpp] encode_put_frame failed, ret=%d\n", ret);
+        mpp_frame_deinit(&frame);
+        mpp_buffer_put(frm_buf_ext);
+        mpp_buffer_group_put(ext_grp);
+        return 0;
+    }
+    mpp_frame_deinit(&frame);
+    // 编码器持有引用，这里减一；编码器完成后会自动释放
+    mpp_buffer_put(frm_buf_ext);
+
+    // 5. 取编码结果
+    do {
+        ret = mpp_enc_data->mpi->encode_get_packet(mpp_enc_data->ctx, &packet);
+        if (ret) {
+            printf("[mpp] encode_get_packet failed, ret=%d\n", ret);
+            mpp_buffer_group_put(ext_grp);
+            return 0;
+        }
+
+        if (packet) {
+            void   *ptr = mpp_packet_get_pos(packet);
+            size_t  len = mpp_packet_get_length(packet);
+
+            mpp_enc_data->pkt_eos = mpp_packet_get_eos(packet);
+
+            if (mpp_enc_data->write_frame)
+                mpp_enc_data->write_frame((uint8_t *)ptr, (int)len);
+
+            if (mpp_packet_is_partition(packet)) {
+                eoi = mpp_packet_is_eoi(packet);
+                mpp_enc_data->frm_pkt_cnt = eoi ? 0 : mpp_enc_data->frm_pkt_cnt + 1;
+            }
+
+            if ((frame_log_counter++ % 30) == 0)
+                printf("[mpp] fd encode frame %-4d size %-7zu\n",
+                       mpp_enc_data->frame_count, len);
+
+            mpp_packet_deinit(&packet);
+            mpp_enc_data->stream_size += len;
+            mpp_enc_data->frame_count += eoi;
+        }
+    } while (!eoi);
+
+    mpp_buffer_group_put(ext_grp);
+
+    if (mpp_enc_data->frame_num > 0 &&
+        mpp_enc_data->frame_count >= mpp_enc_data->frame_num)
+        return 0;
+
+    if (mpp_enc_data->frm_eos && mpp_enc_data->pkt_eos)
+        return 0;
+
+    return 1;
+}
+

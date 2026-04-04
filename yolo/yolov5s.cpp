@@ -4,437 +4,303 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <cstring>
+#include <cstdio>
+#include <fcntl.h>
+#include <unistd.h>
 
-
-// 静态函数，用于打印 rknn_tensor_attr 结构体的信息
+// 打印 tensor 属性（调试用）
 static void print_tensor_attr(rknn_tensor_attr *attr)
 {
-    // 构建形状字符串，例如 "640,480,3" 表示一个 640x480 的 RGB 图像
     string shape_str = attr->n_dims < 1 ? "" : to_string(attr->dims[0]);
-    for(int i = 1; i < attr->n_dims; i++)
-    {
-        string current_str = to_string(attr->dims[i]);
-        shape_str += "," + current_str;
-    }
-
-    // // 打印张量的索引、名称、维度数、维度、大小和格式
-    // printf("index = %d, name = %s， n_dims = %d, dims = [%s], \nsize = %d, fmt = %s\n", 
-    //         attr->index, attr->name, attr->n_dims, shape_str.c_str(), attr->size, get_format_string(attr->fmt));
-    // printf("\n");
+    for (int i = 1; i < attr->n_dims; i++)
+        shape_str += "," + to_string(attr->dims[i]);
+    printf("  index=%d name=%s dims=[%s] size=%d fmt=%d type=%d\n",
+           attr->index, attr->name, shape_str.c_str(), attr->size, attr->fmt, attr->type);
 }
 
-Yolov5s::Yolov5s(const char* model_path, int npu_index)
+// -------------------- 加载模型文件 --------------------
+unsigned char *Yolov5s::load_model(const char *model_path, unsigned int &model_size)
 {
-    int ret; 
-    model_data = load_model(model_path, this->model_size);
-    /* 模型初始化加载到RKNN中 */
-    ret = rknn_init(&this->context, model_data, this->model_size , RKNN_FLAG_PRIOR_HIGH, NULL);
-    if (ret != 0)
-    {  
-        printf("rknn init failed! error code: %d\n", ret);
-    } 
-    else 
-    {
-        printf("yolo %d初始化成功！\n",npu_index);
+    FILE *fp = fopen(model_path, "rb");
+    if (!fp) {
+        printf("open model failed: %s\n", model_path);
+        return nullptr;
     }
+    fseek(fp, 0, SEEK_END);
+    model_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
 
-    /* 对不同线程分配NPU，加速计算 */
-    if(npu_index %4 == 0)     {   ret = rknn_set_core_mask(this->context,RKNN_NPU_CORE_0);}
-    else if(npu_index %4 == 1){   ret = rknn_set_core_mask(this->context,RKNN_NPU_CORE_1);}
-    else                     {   ret = rknn_set_core_mask(this->context,RKNN_NPU_CORE_2);}
-    if (ret != 0){      printf("npu set failed! error code: %d\n", ret);} 
+    unsigned char *data = (unsigned char *)malloc(model_size);
+    if (!data) {
+        printf("malloc model buffer failed\n");
+        fclose(fp);
+        return nullptr;
+    }
+    if (fread(data, 1, model_size, fp) != model_size) {
+        printf("read model failed\n");
+        free(data);
+        fclose(fp);
+        return nullptr;
+    }
+    fclose(fp);
+    return data;
+}
 
-    /* 够查询获取到模型输入输出信息、逐层运行时间、模型推理的总时间、
-        SDK版本、内存占用信息、用户自定义字符串等信息 */
-    ret = rknn_query(context, RKNN_QUERY_IN_OUT_NUM,&this->num_tensors ,sizeof(this->num_tensors) );
-    if (ret != 0){      printf("rknn_query failed! error code: %d\n", ret);    } 
-    // printf("输入 tensor个数为：%d \n",num_tensors.n_output);
-    // printf("输出 tensor个数为：%d \n",num_tensors.n_input);
+// -------------------- 构造函数 --------------------
+Yolov5s::Yolov5s(const char *model_path, int npu_index)
+    : context(0), model_size(0), model_data(nullptr),
+      model_height(0), model_width(0), model_channel(0)
+{
+    int ret;
 
-    /* 根据tensor信息调整输入和输出的tensor个数 */
+    model_data = load_model(model_path, model_size);
+    if (!model_data) return;
+
+    // 初始化 RKNN context
+    ret = rknn_init(&context, model_data, model_size, RKNN_FLAG_PRIOR_HIGH, NULL);
+    if (ret != RKNN_SUCC) {
+        printf("rknn_init failed, ret=%d\n", ret);
+        return;
+    }
+    printf("Yolov5s[%d] init OK\n", npu_index);
+
+    // 绑定 NPU core
+    rknn_core_mask core_mask;
+    switch (npu_index % 3) {
+        case 0: core_mask = RKNN_NPU_CORE_0; break;
+        case 1: core_mask = RKNN_NPU_CORE_1; break;
+        default: core_mask = RKNN_NPU_CORE_2; break;
+    }
+    ret = rknn_set_core_mask(context, core_mask);
+    if (ret != RKNN_SUCC)
+        printf("rknn_set_core_mask failed, ret=%d\n", ret);
+
+    // 查询输入输出 tensor 数量
+    ret = rknn_query(context, RKNN_QUERY_IN_OUT_NUM, &num_tensors, sizeof(num_tensors));
+    if (ret != RKNN_SUCC) {
+        printf("rknn_query IN_OUT_NUM failed, ret=%d\n", ret);
+        return;
+    }
+    printf("  n_input=%d n_output=%d\n", num_tensors.n_input, num_tensors.n_output);
+
+    // 查询输入 tensor 属性
     input_attrs.resize(num_tensors.n_input);
-    output_attrs.resize(num_tensors.n_output);
-    
-    /* 获取模型需要的输入和输出的tensor信息 */
-    for(int i = 0;i < num_tensors.n_input; i++)
-    {
+    for (int i = 0; i < (int)num_tensors.n_input; i++) {
         input_attrs[i].index = i;
-        ret = rknn_query(context, RKNN_QUERY_INPUT_ATTR,&(this->input_attrs[i]) ,sizeof( this->input_attrs[i]) );
-        if (ret != 0)   {printf("rknn_query input_attrs failed! error code: %d\n", ret);} 
-        printf("输入  的tensor%d  属性为：\n",i);
-        print_tensor_attr(&(this->input_attrs[i]));
+        ret = rknn_query(context, RKNN_QUERY_INPUT_ATTR, &input_attrs[i], sizeof(input_attrs[i]));
+        if (ret != RKNN_SUCC)
+            printf("rknn_query INPUT_ATTR[%d] failed, ret=%d\n", i, ret);
+        printf("input[%d]: ", i);
+        print_tensor_attr(&input_attrs[i]);
     }
 
-    for(int i = 0;i < num_tensors.n_output; i++)
-    {
+    // 查询输出 tensor 属性
+    output_attrs.resize(num_tensors.n_output);
+    for (int i = 0; i < (int)num_tensors.n_output; i++) {
         output_attrs[i].index = i;
-        ret = rknn_query(context, RKNN_QUERY_OUTPUT_ATTR,&(this->output_attrs[i]) ,sizeof( this->output_attrs[i]) );
-        if (ret != 0)   {printf("rknn_query output_attrs failed! error code: %d\n", ret);} 
-        // printf("输出  的tensor%d  属性为：\n",i);
-        print_tensor_attr(&(this->output_attrs[i]));
+        ret = rknn_query(context, RKNN_QUERY_OUTPUT_ATTR, &output_attrs[i], sizeof(output_attrs[i]));
+        if (ret != RKNN_SUCC)
+            printf("rknn_query OUTPUT_ATTR[%d] failed, ret=%d\n", i, ret);
     }
 
-    /* 获取模型要求输入图像的参数信息 */
-    // 根据输入张量的格式确定模型的维度信息
-    if(input_attrs[0].fmt == RKNN_TENSOR_NCHW)
-    {
+    // 解析模型输入尺寸（支持 NCHW / NHWC）
+    if (input_attrs[0].fmt == RKNN_TENSOR_NCHW) {
         model_channel = input_attrs[0].dims[1];
-        model_height = input_attrs[0].dims[2];
-        model_width = input_attrs[0].dims[3];
-    }
-    
-    else if(input_attrs[0].fmt == RKNN_TENSOR_NHWC)
-    {
-        model_height = input_attrs[0].dims[1];
-        model_width = input_attrs[0].dims[2];
+        model_height  = input_attrs[0].dims[2];
+        model_width   = input_attrs[0].dims[3];
+    } else { // NHWC
+        model_height  = input_attrs[0].dims[1];
+        model_width   = input_attrs[0].dims[2];
         model_channel = input_attrs[0].dims[3];
     }
+    printf("  model input: %dx%dx%d\n", model_width, model_height, model_channel);
+
+    // 分配中间 RGB888 缓冲（img_width × img_height × 3），用于 YUYV→RGB 色彩转换
+    // rknn_create_mem 内部使用 DMA 堆，fd 可直接被 RGA importbuffer_fd 使用
+    size_t mid_size = (size_t)img_width * img_height * 3;
+    mid_mem_ = rknn_create_mem(context, mid_size);
+    if (!mid_mem_) {
+        printf("[yolo] rknn_create_mem mid_mem failed\n");
+        return;
+    }
 }
 
-// 析构函数中
+// -------------------- 析构函数 --------------------
 Yolov5s::~Yolov5s()
 {
-    if (context) {
-        rknn_destroy(context); // 释放RKNN上下文
+    if (mid_mem_) {
+        rknn_destroy_mem(context, mid_mem_);
+        mid_mem_ = nullptr;
     }
-    free(this->model_data);
+    if (context)
+        rknn_destroy(context);
+    free(model_data);
 }
 
-
-unsigned char * Yolov5s::load_model(const char* model_path, unsigned int &model_size)
+// -------------------- 推理主函数 --------------------
+// dmabuf_fd: V4L2 DMA buffer fd，格式 YUYV422，尺寸 img_width × img_height
+// 使用 RGA 将其转换并缩放为 RGB888（model_width × model_height），
+// 直接写入 RKNN input_mem，实现零拷贝。
+int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
 {
-    FILE *fp;
-    unsigned char* model_data;
+    int ret = 0;
 
-    fp = fopen(model_path, "rb");
-    if(fp == NULL)
-    {
-        printf("open model failed!\n");
-    }
+    // ---------- 1. 创建 RKNN 输入内存，并注册到 context ----------
+    // input_attrs[0].size 就是 model_width * model_height * model_channel（RGB888）
+    // 将 type 设为 NHWC + UINT8，与 RGA 输出的 RGB888 一致
+    input_attrs[0].type = RKNN_TENSOR_UINT8;
+    input_attrs[0].fmt  = RKNN_TENSOR_NHWC;
 
-    int ret = fseek(fp, 0, SEEK_END);
-    if(ret)
-    {
-        printf("fseek err : %d\n",ret);
-    }
-
-    model_size = ftell(fp);
-    
-    model_data =(unsigned char *) malloc(model_size);
-
-    ret = fseek(fp, 0, SEEK_SET);
-    if(ret)
-    {
-        printf("fseek err : %d\n",ret);
-    }
-
-    ret = fread(model_data, 1, model_size, fp);
-    if(ret<0)
-    {
-        printf("read model failed! err: %d\n",ret);
-    }
-    
-    return model_data;
-}
-
-bool Yolov5s::ensure_preprocess_buffers(int src_w, int src_h, int src_c, int dst_w, int dst_h, int dst_c)
-{
-    const size_t src_size = static_cast<size_t>(src_w) * static_cast<size_t>(src_h) * static_cast<size_t>(src_c);
-    const size_t dst_size = static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h) * static_cast<size_t>(dst_c);
-
-    try {
-        if (src_buf_.size() != src_size) {
-            src_buf_.assign(src_size, 0);
-        }
-        if (src_cvt_buf_.size() != src_size) {
-            src_cvt_buf_.assign(src_size, 0);
-        }
-        if (dst_buf_.size() != dst_size) {
-            dst_buf_.assign(dst_size, 0);
-        }
-    } catch (...) {
-        return false;
-    }
-
-    cached_src_w_ = src_w;
-    cached_src_h_ = src_h;
-    cached_src_c_ = src_c;
-    return true;
-}
-
-int Yolov5s::inference_image(const Mat& orig_img, detect_result_group_t &result_group)
-{
-     int ret = 0;
-
-    float nms_threshold       = NMS_THRESHOLD;
-    float box_conf_threshold  = BOX_THRESHOLD;
-
-    Mat bkg;
-    this->img_height = orig_img.rows; // 获取原始图像的高度
-    this->img_width = orig_img.cols; // 获取原始图像的宽度
-    this->img_channel = orig_img.channels(); // 获取原始图像的通道数
-
-    // 检查图像尺寸是否为16的倍数，如果不是则进行填充
-    if(img_width % 16 != 0 || img_height % 16 != 0)
-    {
-        int bkg_width = (img_width + 15) / 16 * 16;
-        int bkg_height = (img_height + 15) / 16 * 16;
-
-        bkg = Mat(bkg_height, bkg_width, CV_8UC3, cv::Scalar(0, 0, 0)); // 创建背景图像
-        orig_img.copyTo(bkg(cv::Rect(0, 0, orig_img.cols, orig_img.rows))); // 将原始图像复制到背景图像中
-        this->img_width = bkg_width; // 更新图像宽度
-        this->img_height = bkg_height; // 更新图像高度
-    }
-    else
-    {
-        // 尺寸已经是 16 的倍数，不需要 padding
-        bkg = orig_img.clone(); // 创建 bkg，并复制原始图像内容 (深拷贝)
-        // 或者，如果你只是想避免 bkg 为空，也可以使用浅拷贝，但深拷贝更安全
-        // bkg = orig_img; // 浅拷贝，bkg 和 orig_img 共享数据，不推荐，可能引起意外修改
-    }
-    //error
-    // this->img_height    = (orig_img.rows + 15) /16 * 16;
-    // this->img_width     = (orig_img.cols + 15) /16 * 16;
-    // this->img_channel   = orig_img.channels();
-
-    int resize_height   = this->model_height;
-    int resize_width    = this->model_width;
-    int resize_channel  = this->model_channel;
-
-// 打印图像的原始尺寸和调整后的尺寸
-    // printf("Image Height: %d\n", img_height);
-    // printf("Image Width: %d\n", img_width);
-    // printf("Image Channels: %d\n", img_channel);
-
-    // printf("Resize Height: %d\n", resize_height);
-    // printf("Resize Width: %d\n", resize_width);
-    // printf("Resize Channels: %d\n", resize_channel);
-
- // 记录开始时间
-    auto start = std::chrono::high_resolution_clock::now();
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-    // //opencv
-    // Mat img_cvt;
-    // Mat img_resize;
-    // start       = std::chrono::high_resolution_clock::now();
-    // cv::cvtColor(orig_img, img_cvt, cv::COLOR_BGR2RGB);
-    // cv::resize(img_cvt, img_resize, Size(resize_height, resize_width), 0, 0, cv::INTER_LINEAR);
-    // end         = std::chrono::high_resolution_clock::now();
-    // duration    =std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    // printf("opencv process time : %ld ms.\n", duration.count());
-    // cv::imwrite("img_cv_linear.jpg", img_resize);    
-
-    // rga进行图像处理
-    start = std::chrono::high_resolution_clock::now();
-    rga_buffer_handle_t src_handle, dst_handle, src_cvt_handle;
-
-    if (bkg.empty()) 
-    {
-        printf("错误：bkg Mat 对象为空，可能未正确初始化！\n");
+    rknn_tensor_mem *input_mem = rknn_create_mem(context, input_attrs[0].size);
+    if (!input_mem) {
+        printf("[yolo] rknn_create_mem input failed\n");
         return -1;
     }
 
-    if (!ensure_preprocess_buffers(img_width, img_height, img_channel,
-                                   resize_width, resize_height, resize_channel)) {
-        printf("预处理缓冲申请失败\n");
+    ret = rknn_set_io_mem(context, input_mem, &input_attrs[0]);
+    if (ret != RKNN_SUCC) {
+        printf("[yolo] rknn_set_io_mem input failed, ret=%d\n", ret);
+        rknn_destroy_mem(context, input_mem);
         return -1;
     }
 
-    // 复制数据并初始化内存（复用成员缓冲）
-    std::memcpy(src_buf_.data(), bkg.data, src_buf_.size());
-    std::memset(src_cvt_buf_.data(), 0x00, src_cvt_buf_.size());
-    std::memset(dst_buf_.data(), 0x00, dst_buf_.size());
-
-    // 导入缓冲区
-    src_handle = importbuffer_virtualaddr(src_buf_.data(), src_buf_.size());
-    src_cvt_handle = importbuffer_virtualaddr(src_cvt_buf_.data(), src_cvt_buf_.size());
-    dst_handle = importbuffer_virtualaddr(dst_buf_.data(), dst_buf_.size());
-
-    if(src_handle == 0 || src_cvt_handle == 0|| dst_handle == 0)
-    {
-        printf("import va failed.\n");
-    }
-    
-    // 定义rga缓冲区
-    rga_buffer_t src = wrapbuffer_handle(src_handle, img_width,img_height, RK_FORMAT_BGR_888);
-    rga_buffer_t src_cvt = wrapbuffer_handle(src_cvt_handle, img_width,img_height, RK_FORMAT_RGB_888);
-    rga_buffer_t dst = wrapbuffer_handle(dst_handle, resize_width, resize_height, RK_FORMAT_RGB_888);
-
-    // 检查图像格式
-    ret = imcheck(src, dst, {}, {});
-    if(ret != IM_STATUS_NOERROR)
-    {
-        printf("%d, imcheck error! %s\n", __LINE__,  imStrError((IM_STATUS)ret));
-        ret = -1;
-        // goto release_buffer;
+    // ---------- 2. 创建 RKNN 输出内存，并注册到 context ----------
+    vector<rknn_tensor_mem *> output_mems(num_tensors.n_output, nullptr);
+    for (int i = 0; i < (int)num_tensors.n_output; i++) {
+        output_mems[i] = rknn_create_mem(context, output_attrs[i].size);
+        if (!output_mems[i]) {
+            printf("[yolo] rknn_create_mem output[%d] failed\n", i);
+            ret = -1;
+            goto cleanup;
+        }
+        ret = rknn_set_io_mem(context, output_mems[i], &output_attrs[i]);
+        if (ret != RKNN_SUCC) {
+            printf("[yolo] rknn_set_io_mem output[%d] failed, ret=%d\n", i, ret);
+            goto cleanup;
+        }
     }
 
-    // 检查图像格式
-    ret = imcvtcolor(src, src_cvt, RK_FORMAT_BGR_888, RK_FORMAT_RGB_888);
-    if(ret == IM_STATUS_SUCCESS)
+    // ---------- 3. RGA 两步：YUYV→RGB888（色彩转换）→ resize 到模型尺寸 ----------
+    // Linux 下正确模式：importbuffer_fd 注册 → wrapbuffer_handle 描述 → RGA操作 → releasebuffer_handle
     {
-        // printf("convert color OK!\n");
-    }   
-    else
-    {
-        printf("%d, cvtColor error! %s\n", __LINE__,  imStrError((IM_STATUS)ret));
-        ret = -1;
-        // goto release_buffer;
+        // import 三个 fd 到 RGA
+        rga_buffer_handle_t h_yuyv  = importbuffer_fd(dmabuf_fd,     img_width,   img_height,   RK_FORMAT_YUYV_422);
+        rga_buffer_handle_t h_mid   = importbuffer_fd(mid_mem_->fd,  img_width,   img_height,   RK_FORMAT_RGB_888);
+        rga_buffer_handle_t h_model = importbuffer_fd(input_mem->fd, model_width, model_height, RK_FORMAT_RGB_888);
+
+        if (!h_yuyv || !h_mid || !h_model) {
+            printf("[yolo] RGA importbuffer_fd failed: h_yuyv=%d h_mid=%d h_model=%d\n",
+                   (int)h_yuyv, (int)h_mid, (int)h_model);
+            if (h_yuyv)  releasebuffer_handle(h_yuyv);
+            if (h_mid)   releasebuffer_handle(h_mid);
+            if (h_model) releasebuffer_handle(h_model);
+            ret = -1;
+            goto cleanup;
+        }
+
+        // 步骤 A：YUYV → RGB888（同尺寸色彩转换）
+        rga_buffer_t src_yuyv = wrapbuffer_handle(h_yuyv,  img_width,   img_height,   RK_FORMAT_YUYV_422);
+        rga_buffer_t dst_rgb  = wrapbuffer_handle(h_mid,   img_width,   img_height,   RK_FORMAT_RGB_888);
+        IM_STATUS rga_ret = imcvtcolor(src_yuyv, dst_rgb, RK_FORMAT_YUYV_422, RK_FORMAT_RGB_888);
+        if (rga_ret != IM_STATUS_SUCCESS) {
+            printf("[yolo] RGA YUYV->RGB failed: %s\n", imStrError(rga_ret));
+            releasebuffer_handle(h_yuyv);
+            releasebuffer_handle(h_mid);
+            releasebuffer_handle(h_model);
+            ret = -1;
+            goto cleanup;
+        }
+
+        // 步骤 B：RGB888 resize → model 尺寸
+        rga_buffer_t src_rgb   = wrapbuffer_handle(h_mid,   img_width,   img_height,   RK_FORMAT_RGB_888);
+        rga_buffer_t dst_model = wrapbuffer_handle(h_model, model_width, model_height, RK_FORMAT_RGB_888);
+        rga_ret = imresize(src_rgb, dst_model);
+        if (rga_ret != IM_STATUS_SUCCESS) {
+            printf("[yolo] RGA RGB resize failed: %s\n", imStrError(rga_ret));
+            releasebuffer_handle(h_yuyv);
+            releasebuffer_handle(h_mid);
+            releasebuffer_handle(h_model);
+            ret = -1;
+            goto cleanup;
+        }
+
+        releasebuffer_handle(h_yuyv);
+        releasebuffer_handle(h_mid);
+        releasebuffer_handle(h_model);
     }
 
-    // 调整图像大小
-    ret = imresize(src_cvt, dst);
-    if(ret == IM_STATUS_SUCCESS)
-    {
-        // printf("resize color OK!\n");
-    }
-    else
-    {
-        printf("%d, resize error! %s\n", __LINE__,  imStrError((IM_STATUS)ret));
-        ret = -1;
-        // goto release_buffer;
-    }
-    
-    // 记录结束时间并计算处理时间
-    end         = std::chrono::high_resolution_clock::now();
-    duration    =std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    // printf("rga process time : %ld ms.\n", duration.count());
-    // 记录结束时间并计算处理时间
-    // 推理
-    start = std::chrono::high_resolution_clock::now();
-    //////printf("set inputs...\n");
-    int inputs_num = num_tensors.n_input;
-    rknn_input inputs[inputs_num];
-    memset(inputs, 0, sizeof(inputs));
-    inputs[0].index = 0;
-    inputs[0].type = RKNN_TENSOR_UINT8;
-    inputs[0].size = model_height * model_width * model_channel;
-    inputs[0].pass_through = false;
-    inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].buf = dst_buf_.data();
-
-    // 设置模型输入
-    rknn_inputs_set(context, inputs_num, inputs);
-
-       ////printf("set outputs");
-    int outputs_num = num_tensors.n_output;
-    rknn_output outputs[outputs_num];
-    memset(outputs, 0, sizeof(outputs));
-    for (int i = 0; i < outputs_num; i++)
-    {
-        outputs[i].want_float = 0;
-    }
-    ////printf("model inferencing...\n");
+    // ---------- 4. NPU 推理 ----------
     ret = rknn_run(context, NULL);
-    if (ret == 0)
-    {
-        //printf("model inferencing OK!\n");
+    if (ret != RKNN_SUCC) {
+        printf("[yolo] rknn_run failed, ret=%d\n", ret);
+        goto cleanup;
     }
 
-    // 获取模型输出
-    rknn_outputs_get(context, outputs_num, outputs, NULL);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    //printf("model inferencing time : %ld ms.\n", duration.count());
-
-    // postprocess  640 / 960
-    float scale_w = (float)model_width / img_width;
-    float scale_h = (float)model_height / img_height;
-
-    vector<int32_t> qnt_zps;
-    vector<float> qnt_scales;
-
-    for (int i = 0; i < outputs_num; i++)
+    // ---------- 5. 后处理 ----------
     {
-        //printf("第%d个output的zp和scale分别是：",i);
-        qnt_zps.emplace_back(output_attrs[i].zp);
-        qnt_scales.emplace_back(output_attrs[i].scale);
-        // printf("%d,%f\n",output_attrs[i].zp,output_attrs[i].scale);
+        float scale_w = (float)model_width  / img_width;
+        float scale_h = (float)model_height / img_height;
+
+        vector<int32_t> qnt_zps;
+        vector<float>   qnt_scales;
+        for (int i = 0; i < (int)num_tensors.n_output; i++) {
+            qnt_zps.emplace_back(output_attrs[i].zp);
+            qnt_scales.emplace_back(output_attrs[i].scale);
+        }
+
+        post_process(
+            (int8_t *)output_mems[0]->virt_addr,
+            (int8_t *)output_mems[1]->virt_addr,
+            (int8_t *)output_mems[2]->virt_addr,
+            model_height, model_width,
+            BOX_THRESHOLD, NMS_THRESHOLD,
+            scale_w, scale_h,
+            qnt_zps, qnt_scales,
+            result_group);
     }
-
-    //进行后处理操作
-    int debug = post_process((int8_t *)outputs[0].buf, (int8_t *)outputs[1].buf, (int8_t *)outputs[2].buf, 
-                model_height, model_width, box_conf_threshold, nms_threshold,
-                 scale_w, scale_h, qnt_zps, qnt_scales,result_group);
-
-    // 释放 RKNN 输出缓冲区
-    rknn_outputs_release(context, outputs_num, outputs);
-
-    // 注意：不在这里绘制结果，由调用者负责绘制
-    // draw_result(orig_img,result_group);
 
     ret = 0;
-// release_buffer:
-    //free
-    // 释放资源
-    if(src_handle)
-    {
-        releasebuffer_handle(src_handle);
+
+cleanup:
+    // ---------- 6. 释放 RKNN 内存 ----------
+    for (int i = 0; i < (int)num_tensors.n_output; i++) {
+        if (output_mems[i])
+            rknn_destroy_mem(context, output_mems[i]);
     }
-    if(src_cvt_handle)
-    {
-        releasebuffer_handle(src_cvt_handle);
-    }
-    if(dst_handle)
-    
-    {
-        releasebuffer_handle(dst_handle);
-    }
+    rknn_destroy_mem(context, input_mem);
+
     return ret;
 }
- 
-int Yolov5s::draw_result(const cv::Mat &orig_img, detect_result_group_t& result_group)
+
+// -------------------- 绘制检测框 --------------------
+// orig_img：原始分辨率的 BGR Mat（img_width × img_height）
+int Yolov5s::draw_result(cv::Mat &orig_img, detect_result_group_t &result_group)
 {
-    for(int i = 0; i < result_group.box_count; i++)
-    {
+    for (int i = 0; i < result_group.box_count; i++) {
         int xmin = result_group.result[i].box.xmin;
         int ymin = result_group.result[i].box.ymin;
         int xmax = result_group.result[i].box.xmax;
         int ymax = result_group.result[i].box.ymax;
 
-        cv::rectangle(orig_img, cv::Point(xmin, ymin), cv::Point(xmax, ymax), cv::Scalar(255, 0, 0, 255), 3);
+        cv::rectangle(orig_img, cv::Point(xmin, ymin), cv::Point(xmax, ymax),
+                      cv::Scalar(255, 0, 0, 255), 3);
 
         std::stringstream ss;
-        ss << std::fixed << std::setprecision(2) // 设置固定小数点表示法，保留两位小数
-            << result_group.result[i].label << ":"
-            << result_group.result[i].box_conf*100 << " %";
+        ss << std::fixed << std::setprecision(2)
+           << result_group.result[i].label << ":"
+           << result_group.result[i].box_conf * 100 << " %";
         std::string img_label = ss.str();
-        
-        // 编码链路下提升可读性：更大字号 + 抗锯齿 + 黑色描边
+
         const double font_scale = 1.1;
-        const int outline_thickness = 4;
-        const int text_thickness = 2;
         cv::Point text_org(xmin, std::max(20, ymin - 12));
 
-        // 先画黑色描边
-        cv::putText(
-                        orig_img,
-                        img_label,
-                        text_org,
-                        FONT_HERSHEY_SIMPLEX,
-                        font_scale,
-                        cv::Scalar(0, 0, 0),
-                        outline_thickness,
-                        cv::LINE_AA,
-                        false
-                    );
-
-        // 再画亮色正文（黄色在 YUV420/H264 下通常比红色更清晰）
-        cv::putText(
-                        orig_img,
-                        img_label,
-                        text_org,
-                        FONT_HERSHEY_SIMPLEX,
-                        font_scale,
-                        cv::Scalar(0, 255, 255),
-                        text_thickness,
-                        cv::LINE_AA,
-                        false
-                    );
-        
+        // 黑色描边
+        cv::putText(orig_img, img_label, text_org, cv::FONT_HERSHEY_SIMPLEX,
+                    font_scale, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
+        // 黄色正文
+        cv::putText(orig_img, img_label, text_org, cv::FONT_HERSHEY_SIMPLEX,
+                    font_scale, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
     }
-    
     return 0;
 }

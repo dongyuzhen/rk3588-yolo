@@ -115,15 +115,26 @@ int process_frame(uint8_t *frame_data, int frame_size) {
         return -1;
     }
 
-    // 限频日志：每 30 帧打印一次
     static int frame_log_counter = 0;
     if ((frame_log_counter++ % 30) == 0) {
         printf("输入帧信息: 大小=%d bytes, 格式=nv12\n", frame_size);
     }
 
-    // 使用MPP进行编码
     if (!g_streamer_ctx.mpp_ctx->process_image(frame_data, frame_size, g_streamer_ctx.mpp_ctx)) {
         printf("Failed to process frame\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int process_frame_fd(int fd, int frame_size) {
+    if (!g_streamer_ctx.is_initialized || !g_streamer_ctx.mpp_ctx) {
+        return -1;
+    }
+
+    if (!process_image_fd(fd, frame_size, g_streamer_ctx.mpp_ctx)) {
+        printf("Failed to process frame fd\n");
         return -1;
     }
 

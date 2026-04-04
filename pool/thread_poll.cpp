@@ -85,22 +85,24 @@ void ThreadPoll::worker(int id)
 }
 
 // 新的方法：往 tasks 里塞任务，并用 std::future<ProcessResult> 返回结果
-std::future<ProcessResult> ThreadPoll::submit_task_async(int index, cv::Mat img)
+//cv::Mat 来源于解码，假设换成cmafd
+//std::future<ProcessResult> ThreadPoll::submit_task_async(int index, cv::Mat img)    
+std::future<ProcessResult> ThreadPoll::submit_task_async(int index, int dmabuf_fd)   //改成传入v4l2的fd
 {
-    std::packaged_task<ProcessResult(std::shared_ptr<Yolov5s>)> task([index, img](std::shared_ptr<Yolov5s> yolo)
+    std::packaged_task<ProcessResult(std::shared_ptr<Yolov5s>)> task([index, dmabuf_fd](std::shared_ptr<Yolov5s> yolo)
     {
         ProcessResult result;
         try
         {
             detect_result_group_t detections;
-            yolo->inference_image(img, detections);
-
-            cv::Mat img_copy = img.clone();
-            yolo->draw_result(img_copy, detections);
-
-            result.processed_img = img_copy;
-            result.detection_results = detections;
-            result.success = true;
+            int ret = yolo->inference_image(dmabuf_fd, detections);
+            if (ret != 0) {
+                result.error_msg = "inference_image failed, ret=" + std::to_string(ret);
+                result.success = false;
+            } else {
+                result.detection_results = detections;
+                result.success = true;
+            }
         }
         catch(const std::exception& e)
         {

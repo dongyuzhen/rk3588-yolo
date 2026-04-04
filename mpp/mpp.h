@@ -161,6 +161,11 @@ typedef struct MppContext {
 
 MppContext* alloc_mpp_context();
 
+// 零拷贝编码：直接从外部 dmabuf fd 导入，不做 memcpy
+// fd   : NV12 数据的 dmabuf fd（来自 CmaBuffer）
+// size : 帧大小（hor_stride * ver_stride * 3/2）
+_Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data);
+
 
 #ifdef __cplusplus
         }

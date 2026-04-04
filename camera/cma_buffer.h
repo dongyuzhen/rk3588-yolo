@@ -54,22 +54,23 @@ private:
 // 常用于 V4L2 多缓冲、编码输入池等场景
 class CmaBufferPool {
 public:
-    CmaBufferPool() = default;
+    CmaBufferPool(int heap_fd);
     ~CmaBufferPool();
 
     CmaBufferPool(const CmaBufferPool&) = delete;
     CmaBufferPool& operator=(const CmaBufferPool&) = delete;
 
     // 批量创建 count 个等大小 buffer
-    bool init(size_t count, int heap_fd, size_t each_size, const std::string& tag_prefix = "pool");
+    bool init(size_t count, size_t each_size, const std::string& tag_prefix = "pool");
 
     // 清空池子（触发每个 CmaBuffer 自动释放）
     void clear();
 
     size_t size() const { return buffers_.size(); }
     CmaBuffer& at(size_t idx) { return buffers_.at(idx); }
-    const CmaBuffer& at(size_t idx) const { return buffers_.at(idx); }
+    const CmaBuffer& at(size_t idx) const { return buffers_.at(idx); } 
 
 private:
-    std::vector<CmaBuffer> buffers_;
+    std::vector<CmaBuffer> buffers_;    // buffer 列表
+    int heap_fd_{-1};  // 分配用的 CMA heap fd，便于统一管理和调试
 };
