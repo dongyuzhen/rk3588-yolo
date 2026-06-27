@@ -32,6 +32,10 @@ private:
     // 中间缓冲：YUYV→RGB 色彩转换用，由 rknn_create_mem 分配，fd 可直接被 RGA 使用
     rknn_tensor_mem *mid_mem_{nullptr};
 
+    // 持久化 RKNN IO 缓冲：构造时分配一次，整个生命周期复用，避免每帧 alloc/free 引起 cache miss
+    rknn_tensor_mem *input_mem_{nullptr};
+    vector<rknn_tensor_mem *> output_mems_;
+
 public:
     Yolov5s(const char *model_path, int npu_index);
     ~Yolov5s();
@@ -51,6 +55,9 @@ public:
 
     // 在 Mat 上绘制检测框（调用方负责提供原始分辨率的 BGR Mat）
     int draw_result(cv::Mat &orig_img, detect_result_group_t &result_group);
+
+    // 对比 RGA 与 OpenCV 预处理速度，iterations 为重复次数
+    void benchmark_preprocess(int dmabuf_fd, int iterations = 100);
 };
 
 #endif

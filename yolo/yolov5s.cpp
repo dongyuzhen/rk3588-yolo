@@ -65,13 +65,18 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
     }
     printf("Yolov5s[%d] init OK\n", npu_index);
 
-    // 绑定 NPU core
+    // 绑定 NPU core（三核轮转，充分利用 RK3588 三个 NPU 核心）
     rknn_core_mask core_mask;
     switch (npu_index % 3) {
         case 0: core_mask = RKNN_NPU_CORE_0; break;
         case 1: core_mask = RKNN_NPU_CORE_1; break;
         default: core_mask = RKNN_NPU_CORE_2; break;
     }
+
+    // [BENCH] 单核测试：解除下面两行注释，所有实例都强制跑 Core0，测单核吞吐上限
+    // 注意：同时要把 ThreadPoll 的线程数改为 1，否则多个线程竞争同一个核会相互阻塞
+    //core_mask = RKNN_NPU_CORE_0;
+
     ret = rknn_set_core_mask(context, core_mask);
     if (ret != RKNN_SUCC)
         printf("rknn_set_core_mask failed, ret=%d\n", ret);
@@ -124,11 +129,47 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         printf("[yolo] rknn_create_mem mid_mem failed\n");
         return;
     }
+
+    // 持久化分配 input/output 内存，避免每帧 create/destroy 引起 cache cold miss
+    input_attrs[0].type = RKNN_TENSOR_UINT8;
+    input_attrs[0].fmt  = RKNN_TENSOR_NHWC;
+    input_mem_ = rknn_create_mem(context, input_attrs[0].size);
+    if (!input_mem_) {
+        printf("[yolo] rknn_create_mem input_mem failed\n");
+        return;
+    }
+    ret = rknn_set_io_mem(context, input_mem_, &input_attrs[0]);
+    if (ret != RKNN_SUCC) {
+        printf("[yolo] rknn_set_io_mem input failed, ret=%d\n", ret);
+        return;
+    }
+
+    output_mems_.resize(num_tensors.n_output, nullptr);
+    for (int i = 0; i < (int)num_tensors.n_output; i++) {
+        output_mems_[i] = rknn_create_mem(context, output_attrs[i].size);
+        if (!output_mems_[i]) {
+            printf("[yolo] rknn_create_mem output[%d] failed\n", i);
+            return;
+        }
+        ret = rknn_set_io_mem(context, output_mems_[i], &output_attrs[i]);
+        if (ret != RKNN_SUCC) {
+            printf("[yolo] rknn_set_io_mem output[%d] failed, ret=%d\n", i, ret);
+            return;
+        }
+    }
 }
 
 // -------------------- 析构函数 --------------------
 Yolov5s::~Yolov5s()
 {
+    for (int i = 0; i < (int)output_mems_.size(); i++) {
+        if (output_mems_[i])
+            rknn_destroy_mem(context, output_mems_[i]);
+    }
+    if (input_mem_) {
+        rknn_destroy_mem(context, input_mem_);
+        input_mem_ = nullptr;
+    }
     if (mid_mem_) {
         rknn_destroy_mem(context, mid_mem_);
         mid_mem_ = nullptr;
@@ -146,48 +187,22 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
 {
     int ret = 0;
 
-    // ---------- 1. 创建 RKNN 输入内存，并注册到 context ----------
-    // input_attrs[0].size 就是 model_width * model_height * model_channel（RGB888）
-    // 将 type 设为 NHWC + UINT8，与 RGA 输出的 RGB888 一致
-    input_attrs[0].type = RKNN_TENSOR_UINT8;
-    input_attrs[0].fmt  = RKNN_TENSOR_NHWC;
-
-    rknn_tensor_mem *input_mem = rknn_create_mem(context, input_attrs[0].size);
-    if (!input_mem) {
-        printf("[yolo] rknn_create_mem input failed\n");
+    // ---------- 1. 检查持久化 IO 缓冲是否就绪 ----------
+    if (!input_mem_ || output_mems_.empty()) {
+        printf("[yolo] IO buffers not initialized\n");
         return -1;
     }
 
-    ret = rknn_set_io_mem(context, input_mem, &input_attrs[0]);
-    if (ret != RKNN_SUCC) {
-        printf("[yolo] rknn_set_io_mem input failed, ret=%d\n", ret);
-        rknn_destroy_mem(context, input_mem);
-        return -1;
-    }
-
-    // ---------- 2. 创建 RKNN 输出内存，并注册到 context ----------
-    vector<rknn_tensor_mem *> output_mems(num_tensors.n_output, nullptr);
-    for (int i = 0; i < (int)num_tensors.n_output; i++) {
-        output_mems[i] = rknn_create_mem(context, output_attrs[i].size);
-        if (!output_mems[i]) {
-            printf("[yolo] rknn_create_mem output[%d] failed\n", i);
-            ret = -1;
-            goto cleanup;
-        }
-        ret = rknn_set_io_mem(context, output_mems[i], &output_attrs[i]);
-        if (ret != RKNN_SUCC) {
-            printf("[yolo] rknn_set_io_mem output[%d] failed, ret=%d\n", i, ret);
-            goto cleanup;
-        }
-    }
-
-    // ---------- 3. RGA 两步：YUYV→RGB888（色彩转换）→ resize 到模型尺寸 ----------
+    // ---------- 2. RGA 两步：YUYV→RGB888（色彩转换）→ resize 到模型尺寸 ----------
     // Linux 下正确模式：importbuffer_fd 注册 → wrapbuffer_handle 描述 → RGA操作 → releasebuffer_handle
     {
+        // [BENCH] 解除下面两行注释以测试 RGA 耗时
+        // auto _t0 = std::chrono::high_resolution_clock::now();
+
         // import 三个 fd 到 RGA
         rga_buffer_handle_t h_yuyv  = importbuffer_fd(dmabuf_fd,     img_width,   img_height,   RK_FORMAT_YUYV_422);
         rga_buffer_handle_t h_mid   = importbuffer_fd(mid_mem_->fd,  img_width,   img_height,   RK_FORMAT_RGB_888);
-        rga_buffer_handle_t h_model = importbuffer_fd(input_mem->fd, model_width, model_height, RK_FORMAT_RGB_888);
+        rga_buffer_handle_t h_model = importbuffer_fd(input_mem_->fd, model_width, model_height, RK_FORMAT_RGB_888);
 
         if (!h_yuyv || !h_mid || !h_model) {
             printf("[yolo] RGA importbuffer_fd failed: h_yuyv=%d h_mid=%d h_model=%d\n",
@@ -196,7 +211,7 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
             if (h_mid)   releasebuffer_handle(h_mid);
             if (h_model) releasebuffer_handle(h_model);
             ret = -1;
-            goto cleanup;
+            return ret;
         }
 
         // 步骤 A：YUYV → RGB888（同尺寸色彩转换）
@@ -208,8 +223,7 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
             releasebuffer_handle(h_yuyv);
             releasebuffer_handle(h_mid);
             releasebuffer_handle(h_model);
-            ret = -1;
-            goto cleanup;
+            return -1;
         }
 
         // 步骤 B：RGB888 resize → model 尺寸
@@ -221,23 +235,47 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
             releasebuffer_handle(h_yuyv);
             releasebuffer_handle(h_mid);
             releasebuffer_handle(h_model);
-            ret = -1;
-            goto cleanup;
+            return -1;
         }
 
         releasebuffer_handle(h_yuyv);
         releasebuffer_handle(h_mid);
         releasebuffer_handle(h_model);
+
+        // [BENCH] 解除下面两行注释以打印 RGA 耗时
+        // double _rga_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _t0).count();
+        // printf("[bench] RGA preprocess: %.3f ms\n", _rga_ms);
     }
 
-    // ---------- 4. NPU 推理 ----------
+    // [BENCH] OpenCV 等效路径（仅用于对比，正常运行时保持注释）
+    // 解除下面整块注释后，需同时注释上方 RGA 块，避免重复写入 input_mem_
+    /*
+    {
+        auto _t0 = std::chrono::high_resolution_clock::now();
+
+        size_t _yuyv_size = (size_t)img_width * img_height * 2;
+        void *_yuyv_ptr = mmap(nullptr, _yuyv_size, PROT_READ, MAP_SHARED, dmabuf_fd, 0);
+        cv::Mat _yuyv_mat(img_height, img_width, CV_8UC2, _yuyv_ptr);
+        cv::Mat _rgb_mat, _resized_mat;
+        cv::cvtColor(_yuyv_mat, _rgb_mat, cv::COLOR_YUV2RGB_YUYV);   // YUYV→RGB（与 RGA 输出色序一致）
+        cv::resize(_rgb_mat, _resized_mat, cv::Size(model_width, model_height));
+        // 将结果写入 input_mem_（与 RGA 路径写入同一块内存，保证后续推理可用）
+        memcpy(input_mem_->virt_addr, _resized_mat.data, (size_t)model_width * model_height * 3);
+        munmap(_yuyv_ptr, _yuyv_size);
+
+        double _ocv_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _t0).count();
+        printf("[bench] OpenCV preprocess: %.3f ms\n", _ocv_ms);
+    }
+    */
+
+    // ---------- 3. NPU 推理 ----------
     ret = rknn_run(context, NULL);
     if (ret != RKNN_SUCC) {
         printf("[yolo] rknn_run failed, ret=%d\n", ret);
-        goto cleanup;
+        return ret;
     }
 
-    // ---------- 5. 后处理 ----------
+    // ---------- 4. 后处理 ----------
     {
         float scale_w = (float)model_width  / img_width;
         float scale_h = (float)model_height / img_height;
@@ -250,9 +288,9 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
         }
 
         post_process(
-            (int8_t *)output_mems[0]->virt_addr,
-            (int8_t *)output_mems[1]->virt_addr,
-            (int8_t *)output_mems[2]->virt_addr,
+            (int8_t *)output_mems_[0]->virt_addr,
+            (int8_t *)output_mems_[1]->virt_addr,
+            (int8_t *)output_mems_[2]->virt_addr,
             model_height, model_width,
             BOX_THRESHOLD, NMS_THRESHOLD,
             scale_w, scale_h,
@@ -260,17 +298,7 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
             result_group);
     }
 
-    ret = 0;
-
-cleanup:
-    // ---------- 6. 释放 RKNN 内存 ----------
-    for (int i = 0; i < (int)num_tensors.n_output; i++) {
-        if (output_mems[i])
-            rknn_destroy_mem(context, output_mems[i]);
-    }
-    rknn_destroy_mem(context, input_mem);
-
-    return ret;
+    return 0;
 }
 
 // -------------------- 绘制检测框 --------------------

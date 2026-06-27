@@ -1,4 +1,4 @@
-set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 cmake_minimum_required(VERSION 3.16)
 
 project(streamer_codev4 LANGUAGES C CXX)
