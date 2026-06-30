@@ -42,7 +42,7 @@
 static void mpp_close(MppContext* ctx);
 static int init_mpp(MppContext *mpp_enc_data);
 static _Bool get_header(MppContext *mpp_enc_data, SpsHeader *sps_header);
-static _Bool process_image(uint8_t *p, int size, MppContext *mpp_enc_data);
+_Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data);
 
 
 
@@ -65,7 +65,7 @@ MppContext * alloc_mpp_context()
     ctx->init_mpp = init_mpp;
     ctx->close = mpp_close;
     ctx->get_header = get_header;
-    ctx->process_image = process_image;
+    ctx->process_frame_fd = process_image_fd;
 
     return ctx;
 }
@@ -493,170 +493,6 @@ static _Bool get_header(MppContext *mpp_enc_data, SpsHeader *sps_header)
 }
 
 /**
- * @brief 处理图像编码
- * 
- * 该函数完成单帧图像的编码处理流程，包括：
- * 1. 将输入图像数据复制到编码缓冲区
- * 2. 设置编码帧参数
- * 3. 执行编码
- * 4. 获取编码后的数据包
- * 5. 处理编码后的数据（保存或发送）
- * 
- * @param p 输入图像数据指针
- * @param size 输入图像数据大小
- * @param mpp_enc_data MPP上下文指针
- * @return _Bool 成功返回true，失败返回false
- */
-static _Bool process_image(uint8_t *p, int size, MppContext *mpp_enc_data)
-{   
-    MPP_RET ret = MPP_OK;
-    MppFrame frame = NULL;
-    MppPacket packet = NULL;
-    MppMeta meta = NULL;
-    
-    if (!mpp_enc_data->frm_buf || !mpp_enc_data->pkt_buf) {
-        printf("error: frm_buf or pkt_buf is NULL, cannot process image\n");
-        return 1;
-    }
-    
-    void *buf = mpp_buffer_get_ptr(mpp_enc_data->frm_buf);
-    RK_U32 eoi = 1;
-    static int frame_log_counter = 0;  // 日志限频计数
-
-    // 复制输入数据到编码缓冲区
-    memcpy(buf, p, size);
-
-    // 初始化编码帧
-    ret = mpp_frame_init(&frame);
-    if (ret) {
-        printf("mpp_frame_init failed\n");
-        return 1;
-    }
-
-    // 设置编码帧参数
-    mpp_frame_set_width(frame, mpp_enc_data->width);
-    mpp_frame_set_height(frame, mpp_enc_data->height);
-    mpp_frame_set_hor_stride(frame, mpp_enc_data->hor_stride);
-    mpp_frame_set_ver_stride(frame, mpp_enc_data->ver_stride);
-    mpp_frame_set_fmt(frame, mpp_enc_data->fmt);
-    mpp_frame_set_buffer(frame, mpp_enc_data->frm_buf);
-    mpp_frame_set_eos(frame, mpp_enc_data->frm_eos);
-
-    // 设置元数据
-    meta = mpp_frame_get_meta(frame);
-    mpp_packet_init_with_buffer(&packet, mpp_enc_data->pkt_buf);
-    mpp_packet_set_length(packet, 0);
-    mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
-
-    // 发送帧到编码器
-    ret = mpp_enc_data->mpi->encode_put_frame(mpp_enc_data->ctx, frame);
-    if (ret) {
-        printf("mpp encode put frame failed\n");
-        mpp_frame_deinit(&frame);
-        return 1;
-    }
-
-    mpp_frame_deinit(&frame);
-
-    do {
-        // 获取编码后的数据包
-        ret = mpp_enc_data->mpi->encode_get_packet(mpp_enc_data->ctx, &packet);
-        if (ret) {
-            printf("mpp encode get packet failed\n");
-            return 1;
-        }
-
-        if (packet) {
-            void *ptr = mpp_packet_get_pos(packet);
-            size_t len = mpp_packet_get_length(packet);
-            char log_buf[256];
-            RK_S32 log_size = sizeof(log_buf) - 1;
-            RK_S32 log_len = 0;
-
-            // 记录第一帧的时间戳
-            // if (!mpp_enc_data->first_pkt)
-            //     mpp_enc_data->first_pkt = mpp_time();
-
-            mpp_enc_data->pkt_eos = mpp_packet_get_eos(packet);
-
-            // 调用回调函数处理编码后的数据
-            if (mpp_enc_data->write_frame)
-                (mpp_enc_data->write_frame)(ptr, len);
-
-            // 记录编码信息
-            log_len += snprintf(log_buf + log_len, log_size - log_len,
-                              "encoded frame %-4d", mpp_enc_data->frame_count);
-
-            // 处理分区编码
-            if (mpp_packet_is_partition(packet)) {
-                eoi = mpp_packet_is_eoi(packet);
-                log_len += snprintf(log_buf + log_len, log_size - log_len,
-                                  " pkt %d", mpp_enc_data->frm_pkt_cnt);
-                mpp_enc_data->frm_pkt_cnt = (eoi) ? (0) : (mpp_enc_data->frm_pkt_cnt + 1);
-            }
-
-            log_len += snprintf(log_buf + log_len, log_size - log_len,
-                              " size %-7zu", len);
-
-            // 处理元数据信息
-            if (mpp_packet_has_meta(packet)) {
-                meta = mpp_packet_get_meta(packet);
-                RK_S32 temporal_id = 0;
-                RK_S32 lt_idx = -1;
-                RK_S32 avg_qp = -1;
-                RK_S32 bps_rt = -1;
-
-                // 获取时间层ID
-                if (MPP_OK == mpp_meta_get_s32(meta, KEY_TEMPORAL_ID, &temporal_id))
-                    log_len += snprintf(log_buf + log_len, log_size - log_len,
-                                      " tid %d", temporal_id);
-
-                // 获取长期参考帧索引
-                if (MPP_OK == mpp_meta_get_s32(meta, KEY_LONG_REF_IDX, &lt_idx))
-                    log_len += snprintf(log_buf + log_len, log_size - log_len,
-                                      " lt %d", lt_idx);
-
-                // 获取平均QP值
-                if (MPP_OK == mpp_meta_get_s32(meta, KEY_ENC_AVERAGE_QP, &avg_qp))
-                    log_len += snprintf(log_buf + log_len, log_size - log_len,
-                                      " qp %2d", avg_qp);
-
-                // 获取实时码率（某些 SDK 版本未定义 KEY_ENC_BPS_RT）
-#ifdef KEY_ENC_BPS_RT
-                if (MPP_OK == mpp_meta_get_s32(meta, KEY_ENC_BPS_RT, &bps_rt))
-                    log_len += snprintf(log_buf + log_len, log_size - log_len,
-                                      " bps_rt %d", bps_rt);
-#endif
-            }
-
-            if ((frame_log_counter++ % 30) == 0) {
-                printf("%s\n", log_buf);
-            }
-
-            mpp_packet_deinit(&packet);
-            mpp_enc_data->stream_size += len;
-            mpp_enc_data->frame_count += eoi;
-
-            if (mpp_enc_data->pkt_eos) {
-                printf("found last packet\n");
-            }
-        }
-    } while (!eoi);
-
-    // 检查是否达到最大帧数限制
-    if (mpp_enc_data->frame_num > 0 && mpp_enc_data->frame_count >= mpp_enc_data->frame_num) {
-        printf("encode max %d frames", mpp_enc_data->frame_count);
-        return 0;
-    }
-
-    // 检查是否到达流结束
-    if (mpp_enc_data->frm_eos && mpp_enc_data->pkt_eos)
-        return 0;
-
-    return 1;
-}
-
-/**
  * @brief 零拷贝编码：直接从外部 dmabuf fd 导入输入帧
  *
  * 与 process_image() 的区别：不做 memcpy，
@@ -759,7 +595,7 @@ _Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data)
             mpp_enc_data->pkt_eos = mpp_packet_get_eos(packet);
 
             if (mpp_enc_data->write_frame)
-                mpp_enc_data->write_frame((uint8_t *)ptr, (int)len);
+                mpp_enc_data->write_frame(packet, ptr, (int)len);
 
             if (mpp_packet_is_partition(packet)) {
                 eoi = mpp_packet_is_eoi(packet);

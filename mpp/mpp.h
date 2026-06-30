@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <rockchip/rk_mpi.h>
 
 #ifdef __cplusplus
@@ -62,6 +63,9 @@ typedef struct {
  * 
  * 该结构体包含了MPP编码器运行所需的所有参数和状态信息
  */
+
+struct MppContext;
+
 typedef struct MppContext {
         // 基础MPP上下文
         MppCtx ctx;          ///< MPP上下文句柄
@@ -145,27 +149,16 @@ typedef struct MppContext {
         RK_S64 first_pkt;       ///< 第一个包时间戳
 
         // 回调函数（编码）
-        int (*write_frame)(uint8_t*data,int size);  ///< 写入编码后帧数据的回调函数
+        int (*write_frame)(void* packet, uint8_t* data, int size);  ///< 写入编码后帧数据的回调函数，支持零拷贝移交 packet 句柄
         int (*init_mpp)(struct MppContext *mpp_enc_data);        ///< 初始化MPP编码器的回调函数
-        _Bool (*process_image)(uint8_t *p, int size, struct MppContext *mpp_enc_data);  ///< 处理图像编码的回调函数
-        _Bool (*get_header)(struct MppContext *mpp_enc_data,SpsHeader *sps_header);  ///< 获取编码头信息的回调函数
+        bool (*process_frame_fd)(int fd, int size, struct MppContext *mpp_enc_data);  ///< 处理图像编码的回调函数
+        bool (*get_header)(struct MppContext *mpp_enc_data,SpsHeader *sps_header);  ///< 获取编码头信息的回调函数
+        void (*close)(struct MppContext *mpp_enc_data);  ///< 清理编码器资源
 
-        // 回调函数（解码）
-        int (*init_decoder)(struct MppContext *mpp_dec_data);    ///< 初始化MPP解码器的回调函数
-        _Bool (*process_packet)(uint8_t *p, int size, struct MppContext *mpp_dec_data); ///< 处理码流解码的回调函数
-        int (*read_frame)(uint8_t *data, int size, int width, int height, MppFrameFormat fmt); ///< 输出解码后帧数据的回调函数
-
-        void (*close)(struct MppContext* ctx);                   ///< 关闭MPP的回调函数
 
 } MppContext;
 
 MppContext* alloc_mpp_context();
-
-// 零拷贝编码：直接从外部 dmabuf fd 导入，不做 memcpy
-// fd   : NV12 数据的 dmabuf fd（来自 CmaBuffer）
-// size : 帧大小（hor_stride * ver_stride * 3/2）
-_Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data);
-
 
 #ifdef __cplusplus
         }

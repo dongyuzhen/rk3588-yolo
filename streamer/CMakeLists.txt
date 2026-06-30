@@ -1,6 +1,5 @@
 add_library(streamer_module STATIC
-    streamer.c
-    rtmp.c
+    rtsp.cpp
 )
 
 target_include_directories(streamer_module

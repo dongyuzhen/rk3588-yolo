@@ -21,17 +21,24 @@
 #include "SafeQueue.h"
 #include "camera/cma_buffer.h"
 #include "camera/v4l2_camera.h"
-#include "streamer.h"
+#include "mpp/mpp_encoder.h"
+#include "streamer/rtsp.h"
+
 #include "thread_poll.h"
+
+//mpp
+#include <rockchip/rk_mpi.h>
 
 // RGA
 #include "RgaUtils.h"
 #include "drmrga.h"
 #include "im2d.h"
 #include "rga.h"
+#include "rga_utils.h" // 提取出的 RGA 硬件转换工具函数
 #include "memory"
 #include "camera/cma_buffer.h"
 #define ALIGN(x, a) (((x) + (a)-1) & ~((a)-1))
+
 
 namespace {
 
@@ -98,75 +105,10 @@ V4L2Camera g_camera;
 std::unique_ptr<CmaBufferPool> g_pool;
 SafeQueue<CapturedFrame> g_readQueue(READ_QUEUE_CAP);
 SafeQueue<YoloOutputFrame> g_writeQueue(WRITE_QUEUE_CAP);
-
+SafeQueue<EncodedPacket> rtsp_queue(24);
 // 线程退出信号
 std::atomic<bool> g_readFinish(false);
 std::atomic<bool> g_processFinish(false);
-
-// YUYV dmabuf fd → BGR 虚拟地址，使用 RGA 硬件转换
-static void YUYV_to_BGR_rga(int yuyv_fd, int w, int h, uint8_t *bgr)
-{
-    // 图像的通道是3，且没有padding，所以 stride=w*3；如果有padding或者通道数不同，需要调整stride参数并保证nv12缓冲大小足够
-    // 错误写法 2：const size_t bgr_size = static_cast<size_t>(w * h * 3)，溢出后再转换，毫无意义
-    const size_t bgr_size = static_cast<size_t>(w) * h * 3;
-
-    /*直接使用的rga的fd模式，有3种，一种是物理地址，一种虚拟地址，一种dmabuffer
-    转换速度：物理>dma>虚拟
-    */
-    rga_buffer_handle_t yuyv_h = importbuffer_fd(yuyv_fd, w, h, RK_FORMAT_YUYV_422);
-    /*
-    为什么这里是虚拟地址，因为画框是cpu，没有用硬件进行，就没有fd模式，导出的是虚拟地址
-    */
-    rga_buffer_handle_t bgr_h  = importbuffer_virtualaddr(bgr, bgr_size);
-    if (yuyv_h == 0 || bgr_h == 0) {
-        std::printf("[Write] import yuyv/bgr failed\n");
-        if (yuyv_h) releasebuffer_handle(yuyv_h);
-        if (bgr_h)  releasebuffer_handle(bgr_h);
-        return;
-    }
-    rga_buffer_t src = wrapbuffer_handle(yuyv_h, w, h, RK_FORMAT_YUYV_422);
-    rga_buffer_t dst = wrapbuffer_handle(bgr_h,  w, h, RK_FORMAT_BGR_888);
-    int ret = imcvtcolor(src, dst, RK_FORMAT_YUYV_422, RK_FORMAT_BGR_888);
-    if (ret != IM_STATUS_SUCCESS)
-        std::printf("[Write] RGA YUYV->BGR failed: %s\n", imStrError((IM_STATUS)ret));
-    releasebuffer_handle(yuyv_h);
-    releasebuffer_handle(bgr_h);
-}
-
-// BGR 虚拟地址 → NV12 虚拟地址，使用 RGA 硬件转换
-static void BGR_to_NV12_rga(uint8_t *bgr, int w, int h,
-                              uint8_t *nv12, int w_stride, int h_stride)
-{
-    const size_t bgr_size  = static_cast<size_t>(w) * h * 3;
-    const size_t nv12_size = static_cast<size_t>(w_stride) * h_stride * 3 / 2;
-    rga_buffer_handle_t bgr_h  = importbuffer_virtualaddr(bgr,  bgr_size);
-    rga_buffer_handle_t nv12_h = importbuffer_virtualaddr(nv12, nv12_size);
-    if (bgr_h == 0 || nv12_h == 0) {
-        std::printf("[Write] import bgr/nv12 va failed\n");
-        if (bgr_h)  releasebuffer_handle(bgr_h);
-        if (nv12_h) releasebuffer_handle(nv12_h);
-        return;
-    }
-    rga_buffer_t src = wrapbuffer_handle(bgr_h,  w, h, RK_FORMAT_BGR_888);
-    rga_buffer_t dst = wrapbuffer_handle(nv12_h, w, h, RK_FORMAT_YCbCr_420_SP, w_stride, h_stride);
-    int ret = imcvtcolor(src, dst, RK_FORMAT_BGR_888, RK_FORMAT_YCbCr_420_SP);
-    if (ret != IM_STATUS_SUCCESS)
-        std::printf("[Write] RGA BGR->NV12 failed: %s\n", imStrError((IM_STATUS)ret));
-    releasebuffer_handle(bgr_h);
-    releasebuffer_handle(nv12_h);
-}
-
-// MJPEG 解码：
-// - baseline：先拷贝 compressed bytes 再 imdecode
-// - optimized：直接把 packet.data 作为 Mat 视图解码
-// cv::Mat decodeMjpegFrame(FramePacket_t& packet) {
-//     if (!packet.data || packet.bytes_used == 0) {
-//         return cv::Mat();
-//     }
-//     cv::Mat encoded_view(1, static_cast<int>(packet.bytes_used), CV_8UC1, const_cast<uint8_t*>(packet.data));
-//     //这里固定发生在cpu上，后续可以移植mipi摄像头驱动
-//     return cv::imdecode(encoded_view, cv::IMREAD_COLOR);
-// }
 
 
 // ------------------------ 线程1：采集 ------------------------
@@ -320,6 +262,29 @@ void writeThreadFunc(cv::VideoWriter *writer) {
     }
 }
 
+//入队回调
+int enc_pkt_enqueue(void* pkt, uint8_t* data_ptr, int size)
+{
+    // 强转回真身
+    MppPacket mpp_pkt = (MppPacket)pkt;
+    EncodedPacket enc_pkt;
+    enc_pkt.size = size;
+
+    // 从硬件包里榨取时间戳
+    enc_pkt.pts = mpp_packet_get_pts(mpp_pkt);
+    enc_pkt.dts = mpp_packet_get_dts(mpp_pkt);
+    
+    // 用智能指针接管 C 语言的包释放
+    // 当这个 shared_ptr 走到生命周期尽头（也就是 RTSP 发送完之后），会自动执行这里面的 lambda 销毁
+    enc_pkt.data = std::shared_ptr<uint8_t>(data_ptr, [mpp_pkt](uint8_t* p) {
+        MppPacket temp_pkt = mpp_pkt; // 需要一个拷贝去给 deinit 传指针
+        mpp_packet_deinit(&temp_pkt);
+    });
+    // 4. 压入队列，丢弃老包时 shared_ptr 会自动调用上面的 deinit 释放内存
+    rtsp_queue.enqueue_drop_oldest(enc_pkt, [](EncodedPacket& dropped){});
+    return 0;
+}
+
 } // namespace
 
 // ------------------------ 主流程 ------------------------
@@ -363,7 +328,6 @@ int main(int argc, char* argv[]) {
     g_ver_stride = ALIGN(height, 16);
 
     const int bitrate = width * height / 8 * fps;
-    const std::string rtmpPath = "rtmp://192.168.163.8:1935/live";
 
     // 4) 为 pipeline NV12 工作缓冲打开 system heap（非连续内存，RGA 通过 IOMMU 访问，不占 CMA）
     g_nv12_heap_fd = open("/dev/dma_heap/system", O_RDWR);
@@ -374,13 +338,26 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    // 5) 初始化 streamer（MPP/FFmpeg）
-    if (init_streamer(width, height, fps, bitrate, rtmpPath.c_str(), enable_rtmp ? 1 : 0) != 0) {
-        std::cerr << "init_streamer failed" << std::endl;
+    
+    const std::string rtspPath = "rtsp://192.168.163.8:8554/live"; // 换成你的 RTSP 服务地址
+    
+    // 5) 初始化 MPP 和 RTSP 推流器
+    if (init_mpp_encoder(width, height, fps, bitrate, enc_pkt_enqueue) != 0) {
+        std::cerr << "init_mpp_encoder failed" << std::endl;
         close(g_nv12_heap_fd);
         g_nv12_heap_fd = -1;
         return -1;
     }
+
+    // --- 架构核心：在此处启动网络推流后端 ---
+    uint8_t* sps_data = nullptr;
+    int sps_size = 0;
+    get_mpp_sps_pps(&sps_data, &sps_size); // 拿到弥足珍贵的 SPS/PPS 头
+
+    // 创建推流器对象，它会在后台自动启动推流死循环，并且生命周期绑定在 main 函数上
+    RtspStreamer rtsp_streamer(rtspPath, width, height, fps, rtsp_queue, sps_data, sps_size);
+    std::cout << "[Main] RTSP Streamer started: " << rtspPath << std::endl;
+
 
     // 6) 本地输出（默认关闭省 CPU，传 --save-local 开启）
     const std::string outPath = "../output.avi";
@@ -394,18 +371,18 @@ int main(int argc, char* argv[]) {
             writer = nullptr;
         }
     }
-
-    // 7) 初始化 YOLO 线程池 (传入相机分辨率用于动态计算 Letterbox)
+    
+    //  初始化 YOLO 线程池 (传入相机分辨率用于动态计算 Letterbox)
     ThreadPoll npu_pool("../model/yolov5s.rknn", PROCESS_THREAD_NUM, width, height);
 
-    // 8) 启动三段流水线线程
+    // 启动三段流水线线程
     const auto t_start = std::chrono::steady_clock::now();
 
     std::thread t_cap(captureThreadFunc, frame_limit);
     std::thread t_proc(processThreadFunc, std::ref(npu_pool));
     std::thread t_write(writeThreadFunc, writer);
 
-    // 9) 等待线程收敛并停止队列
+    //  等待线程收敛并停止队列
     t_cap.join();
     t_proc.join();
 
@@ -414,9 +391,9 @@ int main(int argc, char* argv[]) {
 
     t_write.join();
 
-    // 10) 清理资源
+    //  清理资源
     if (writer) { writer->release(); delete writer; }
-    close_streamer();
+    close_mpp_encoder();
     if (g_nv12_heap_fd >= 0) {
         close(g_nv12_heap_fd);
         g_nv12_heap_fd = -1;

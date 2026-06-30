@@ -11,12 +11,14 @@ struct AVStream;
 
 class RtspStreamer{
 public:
-    RtspStreamer(const std::string& url, int width, int height, int fps, SafeQueue<EncodedPacket>& queue);
+    RtspStreamer(const std::string& url, int width, int height, int fps, SafeQueue<EncodedPacket>& queue, uint8_t* extradata, int extradata_size);
     ~RtspStreamer();
 
 private:
     std::string url_;
     int width_, height_, fps_;
+    uint8_t* extradata_ = nullptr;
+    int extradata_size_ = 0;
 
     // 引用外部的队列（不占所有权，只做消费者）
     SafeQueue<EncodedPacket>& packet_queue_;
@@ -33,4 +35,4 @@ private:
     bool initFFmpeg();
     void pushLoop(); // 真正调用 FFmpeg API 的线程函数
     void cleanupFFmpeg();
-}
+};

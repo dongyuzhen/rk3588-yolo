@@ -1,5 +1,6 @@
 add_library(mpp_module STATIC
     mpp.c
+    mpp_encoder.cpp
 )
 
 target_include_directories(mpp_module
