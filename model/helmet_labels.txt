@@ -1,0 +1,12 @@
+boots
+gloves
+helmet on
+helmet_blue
+helmet_white
+helmet_yellow
+no boots
+no glove
+no helmet
+no vest
+person
+vest
