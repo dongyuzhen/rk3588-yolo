@@ -1,0 +1,15 @@
+/home/radxa/rk3588-yolo/build/CMakeFiles/app.dir
+/home/radxa/rk3588-yolo/build/CMakeFiles/edit_cache.dir
+/home/radxa/rk3588-yolo/build/CMakeFiles/rebuild_cache.dir
+/home/radxa/rk3588-yolo/build/mpp/CMakeFiles/mpp_module.dir
+/home/radxa/rk3588-yolo/build/mpp/CMakeFiles/edit_cache.dir
+/home/radxa/rk3588-yolo/build/mpp/CMakeFiles/rebuild_cache.dir
+/home/radxa/rk3588-yolo/build/yolo/CMakeFiles/yolo_module.dir
+/home/radxa/rk3588-yolo/build/yolo/CMakeFiles/edit_cache.dir
+/home/radxa/rk3588-yolo/build/yolo/CMakeFiles/rebuild_cache.dir
+/home/radxa/rk3588-yolo/build/pool/CMakeFiles/pool_module.dir
+/home/radxa/rk3588-yolo/build/pool/CMakeFiles/edit_cache.dir
+/home/radxa/rk3588-yolo/build/pool/CMakeFiles/rebuild_cache.dir
+/home/radxa/rk3588-yolo/build/streamer/CMakeFiles/streamer_module.dir
+/home/radxa/rk3588-yolo/build/streamer/CMakeFiles/edit_cache.dir
+/home/radxa/rk3588-yolo/build/streamer/CMakeFiles/rebuild_cache.dir

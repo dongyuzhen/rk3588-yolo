@@ -1,0 +1,2 @@
+/usr/bin/ar qc libyolo_module.a CMakeFiles/yolo_module.dir/yolov5s.cpp.o CMakeFiles/yolo_module.dir/post_process.cpp.o
+/usr/bin/ranlib libyolo_module.a

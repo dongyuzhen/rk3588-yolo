@@ -1,0 +1,185 @@
+Camera fault detected (fail=31), retry 1/3
+Camera recovery attempt 1 failed.
+Camera fault detected (fail=1512117), retry 2/3
+Camera recovery attempt 2 failed.
+Camera fault detected (fail=3748643), retry 3/3
+Camera recovery attempt 3 failed.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+Camera fault detected (fail=31), retry 1/3
+Camera recovery attempt 1 failed.
+Camera fault detected (fail=960079), retry 2/3
+Camera recovery attempt 2 failed.
+Camera fault detected (fail=3500431), retry 3/3
+Camera recovery attempt 3 failed.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+Camera fault detected (fail=31), retry 1/3
+Camera recovery attempt 1 failed.
+Camera fault detected (fail=1857251), retry 2/3
+Camera recovery attempt 2 failed.
+Camera fault detected (fail=3419409), retry 3/3
+Camera recovery attempt 3 failed.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+FATAL: camera recovery failed after 3 retries. Giving up.
+Camera fault detected (fail=31), retry 1/3
+Camera recovered successfully.
+Camera fault detected (fail=30), retry 1/3
+Camera recovered successfully.
+Camera fault detected (fail=30), retry 1/3
+Camera fault detected (fail=31), retry 1/3
+Camera recovered successfully.
+Camera fault detected (fail=31), retry 1/3
+Camera recovered successfully.
+Camera fault detected (fail=31), retry 1/3
+Camera recovered successfully.
+Camera fault detected (fail=31), retry 1/3
+Camera recovered successfully.
