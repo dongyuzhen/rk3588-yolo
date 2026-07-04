@@ -36,6 +36,12 @@ public:
     // CPU 读后同步：通知内核/设备做 cache 同步结束
     bool syncEndRead() const;
 
+    // CPU 写前同步：获取 buffer 的写权限
+    bool syncStartWrite() const;
+
+    // CPU 写后同步：将 CPU cache 刷入到设备物理内存（极重要，防撕裂/鬼影）
+    bool syncEndWrite() const;
+
     int fd() const { return fd_; }
     void* addr() const { return addr_; }
     size_t size() const { return size_; }
@@ -54,7 +60,9 @@ private:
 // 常用于 V4L2 多缓冲、编码输入池等场景
 class CmaBufferPool {
 public:
-    CmaBufferPool(int heap_fd);
+    // @param heap_fd  已打开的 dma-heap fd（由调用方管理生命周期）
+    // @param owns_fd  为 true 时析构时负责 close heap_fd，默认 false（外部管理）
+    CmaBufferPool(int heap_fd, bool owns_fd = false);
     ~CmaBufferPool();
 
     // 不允许复制，避免误用导致资源管理混乱
@@ -74,4 +82,5 @@ public:
 private:
     std::vector<CmaBuffer> buffers_;    // buffer 列表
     int heap_fd_{-1};  // 分配用的 CMA heap fd，便于统一管理和调试
+    bool owns_fd_{false}; // 是否由本池负责关闭 heap_fd_（默认 false，外部管理）
 };

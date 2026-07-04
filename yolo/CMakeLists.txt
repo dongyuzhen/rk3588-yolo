@@ -7,6 +7,7 @@ target_include_directories(yolo_module
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/bench
         ${OpenCV_INCLUDE_DIRS}
         ${RKNN_INCLUDE_DIRS}
         ${RGA_INCLUDE_DIRS}

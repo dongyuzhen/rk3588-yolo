@@ -29,7 +29,7 @@ int init_mpp_encoder(int width, int height, int fps, int bitrate, int (*callback
     g_mpp_enc_ctx.mpp_ctx->bps = bitrate;
     g_mpp_enc_ctx.mpp_ctx->gop_len = fps * 2;
     g_mpp_enc_ctx.mpp_ctx->write_frame = callback; // 移交控制权给上层队列回调
-    g_mpp_enc_ctx.mpp_ctx->type = MPP_VIDEO_CodingAVC;
+    g_mpp_enc_ctx.mpp_ctx->type = MPP_VIDEO_CodingAVC;  // H.264: 逐帧输出，兼容同步管线
     g_mpp_enc_ctx.mpp_ctx->fmt = MPP_FMT_YUV420SP;
     g_mpp_enc_ctx.mpp_ctx->rc_mode = MPP_ENC_RC_MODE_CBR;
 
@@ -42,10 +42,30 @@ int init_mpp_encoder(int width, int height, int fps, int bitrate, int (*callback
     return 0;
 }
 
-int process_frame_fd(int fd, int frame_size) {
+int encode_mpp_frame() {
     if (!g_mpp_enc_ctx.is_initialized || !g_mpp_enc_ctx.mpp_ctx) return -1;
-    if (!g_mpp_enc_ctx.mpp_ctx->process_frame_fd(fd, frame_size, g_mpp_enc_ctx.mpp_ctx)) return -1;
+    if (!g_mpp_enc_ctx.mpp_ctx->encode_mpp_frame(g_mpp_enc_ctx.mpp_ctx)) return -1;
     return 0;
+}
+
+int get_mpp_input_fd() {
+    if (g_mpp_enc_ctx.is_initialized && g_mpp_enc_ctx.mpp_ctx && g_mpp_enc_ctx.mpp_ctx->frm_buf) {
+        return mpp_buffer_get_fd(g_mpp_enc_ctx.mpp_ctx->frm_buf);
+    }
+    return -1;
+}
+
+size_t get_mpp_input_size() {
+    if (g_mpp_enc_ctx.is_initialized && g_mpp_enc_ctx.mpp_ctx) {
+        return g_mpp_enc_ctx.mpp_ctx->frame_size;
+    }
+    return 0;
+}
+
+void begin_mpp_input_sync() {
+    if (g_mpp_enc_ctx.is_initialized && g_mpp_enc_ctx.mpp_ctx && g_mpp_enc_ctx.mpp_ctx->frm_buf) {
+        mpp_buffer_sync_begin(g_mpp_enc_ctx.mpp_ctx->frm_buf);
+    }
 }
 
 void get_mpp_sps_pps(uint8_t** data, int* size) {

@@ -14,7 +14,7 @@
 
 #include "post_process.h"
 
-using namespace std;
+
 
 class Yolov5s
 {
@@ -23,8 +23,8 @@ private:
     unsigned int model_size;
 
     rknn_input_output_num num_tensors;
-    vector<rknn_tensor_attr> input_attrs;
-    vector<rknn_tensor_attr> output_attrs;
+    std::vector<rknn_tensor_attr> input_attrs;
+    std::vector<rknn_tensor_attr> output_attrs;
 
     unsigned char *model_data;
     unsigned char *load_model(const char *model_path, unsigned int &model_size);
@@ -34,7 +34,7 @@ private:
 
     // 持久化 RKNN IO 缓冲：构造时分配一次，整个生命周期复用，避免每帧 alloc/free 引起 cache miss
     rknn_tensor_mem *input_mem_{nullptr};
-    vector<rknn_tensor_mem *> output_mems_;
+    std::vector<rknn_tensor_mem *> output_mems_;
 
 public:
     Yolov5s(const char *model_path, int npu_index, int img_w = 640, int img_h = 480);

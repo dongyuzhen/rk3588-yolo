@@ -14,9 +14,10 @@ CmaBuffer::~CmaBuffer() {
     release();
 }
 
-CmaBufferPool::CmaBufferPool(int fd)
+CmaBufferPool::CmaBufferPool(int fd, bool owns_fd)
 {
     heap_fd_ = fd;
+    owns_fd_ = owns_fd;
 }
 
 CmaBuffer::CmaBuffer(CmaBuffer&& other) noexcept {
@@ -128,9 +129,39 @@ bool CmaBuffer::syncEndRead() const {
     return true;
 }
 
+bool CmaBuffer::syncStartWrite() const {
+    if (fd_ < 0) return false;
+
+    // CPU 写前同步
+    dma_buf_sync sync_start{};
+    sync_start.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
+    if (ioctl(fd_, DMA_BUF_IOCTL_SYNC, &sync_start) < 0) {
+        std::perror("DMA_BUF_IOCTL_SYNC START WRITE");
+        return false;
+    }
+    return true;
+}
+
+bool CmaBuffer::syncEndWrite() const {
+    if (fd_ < 0) return false;
+
+    // CPU 写后同步：刷 CPU Cache，保证 RGA 读取时不闪烁、不鬼影
+    dma_buf_sync sync_end{};
+    sync_end.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+    if (ioctl(fd_, DMA_BUF_IOCTL_SYNC, &sync_end) < 0) {
+        std::perror("DMA_BUF_IOCTL_SYNC END WRITE");
+        return false;
+    }
+    return true;
+}
+
 CmaBufferPool::~CmaBufferPool() {
     clear();
-    close(heap_fd_);
+    // 仅当本池拥有 heap_fd_ 时才关闭，避免外部调用方再次 close 导致双重关闭
+    if (owns_fd_ && heap_fd_ >= 0) {
+        close(heap_fd_);
+        heap_fd_ = -1;
+    }
 }
 
 bool CmaBufferPool::init(size_t count,size_t each_size, const std::string& tag_prefix) {

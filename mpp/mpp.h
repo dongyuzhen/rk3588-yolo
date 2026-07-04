@@ -151,7 +151,7 @@ typedef struct MppContext {
         // 回调函数（编码）
         int (*write_frame)(void* packet, uint8_t* data, int size);  ///< 写入编码后帧数据的回调函数，支持零拷贝移交 packet 句柄
         int (*init_mpp)(struct MppContext *mpp_enc_data);        ///< 初始化MPP编码器的回调函数
-        bool (*process_frame_fd)(int fd, int size, struct MppContext *mpp_enc_data);  ///< 处理图像编码的回调函数
+        bool (*encode_mpp_frame)(struct MppContext *mpp_enc_data);  ///< 处理图像编码的回调函数
         bool (*get_header)(struct MppContext *mpp_enc_data,SpsHeader *sps_header);  ///< 获取编码头信息的回调函数
         void (*close)(struct MppContext *mpp_enc_data);  ///< 清理编码器资源
 

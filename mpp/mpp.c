@@ -35,15 +35,16 @@
     // mpp_ctx->init_mpp(mpp_ctx);
     
 //============================================使用模板============================================
-
 #include "mpp.h"
+#include <unistd.h>
+#include <sys/mman.h>
+#include <string.h>
 
 // 声明内部函数
 static void mpp_close(MppContext* ctx);
 static int init_mpp(MppContext *mpp_enc_data);
 static _Bool get_header(MppContext *mpp_enc_data, SpsHeader *sps_header);
-_Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data);
-
+_Bool encode_mpp_frame(MppContext *mpp_enc_data);
 
 
 /**
@@ -65,7 +66,7 @@ MppContext * alloc_mpp_context()
     ctx->init_mpp = init_mpp;
     ctx->close = mpp_close;
     ctx->get_header = get_header;
-    ctx->process_frame_fd = process_image_fd;
+    ctx->encode_mpp_frame = encode_mpp_frame;
 
     return ctx;
 }
@@ -323,28 +324,38 @@ static int init_mpp(MppContext *mpp_enc_data)
     // 设置GOP参数
     mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "rc:gop", mpp_enc_data->gop_len);
 
-    // 设置编码器类型和H.264参数
+    // 设置编码器类型（必须！否则 MPP_ENC_SET_CFG 不知道用哪种 codec）
     mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "codec:type", mpp_enc_data->type);
-    RK_U32 constraint_set;
-    /*
-        * H.264 profile_idc parameter
-        * 66  - Baseline profile
-        * 77  - Main profile
-        * 100 - High profile
-        */
-    mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:profile", 100); // High profile
-    /*
-        * H.264 level_idc parameter
-        * 10 / 11 / 12 / 13    - qcif@15fps / cif@7.5fps / cif@15fps / cif@30fps
-        * 20 / 21 / 22         - cif@30fps / half-D1@@25fps / D1@12.5fps
-        * 30 / 31 / 32         - D1@25fps / 720p@30fps / 720p@60fps
-        * 40 / 41 / 42         - 1080p@30fps / 1080p@30fps / 1080p@60fps
-        * 50 / 51 / 52         - 4K@30fps
-        */
-    mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:level", 31);
-    mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:cabac_en", 1);
-    mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:cabac_idc", 0);
-    mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:trans8x8", 1);
+
+    // 根据编码器类型选择对应的 profile/level 参数
+    if (mpp_enc_data->type == MPP_VIDEO_CodingAVC) {
+        /*
+         * H.264 profile_idc parameter
+         * 66  - Baseline profile
+         * 77  - Main profile
+         * 100 - High profile
+         */
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:profile", 100); // High profile
+        /*
+         * H.264 level_idc parameter
+         * 40 / 41 / 42 - 1080p@30fps / 1080p@30fps / 1080p@60fps
+         */
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:level", 42);    // 1080p@60fps
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:cabac_en", 1);
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:cabac_idc", 0);
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h264:trans8x8", 1);
+    } else if (mpp_enc_data->type == MPP_VIDEO_CodingHEVC) {
+        /*
+         * H.265 (HEVC) profile: Main profile = 1
+         * H.265 level: 直接用标准值，5.1 → 51（不是 5.1*30！）
+         *   30=Level3, 40=Level4, 50=Level5, 51=Level5.1, 52=Level5.2
+         * tier: 0=Main tier, 1=High tier
+         */
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h265:profile", 1);  // Main profile
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h265:level",   51); // Level 5.1
+        mpp_enc_cfg_set_s32(mpp_enc_data->cfg, "h265:tier",     0); // Main tier
+    }
+
 
     
     // 应用配置
@@ -465,7 +476,7 @@ static _Bool get_header(MppContext *mpp_enc_data, SpsHeader *sps_header)
         ret = mpp_enc_data->mpi->control(mpp_enc_data->ctx, MPP_ENC_GET_HDR_SYNC, packet);
         if (ret) {
             printf("mpi control enc get extra info failed\n");
-            return 1;
+            return 0;
         }
 
         // 保存头信息
@@ -478,7 +489,7 @@ static _Bool get_header(MppContext *mpp_enc_data, SpsHeader *sps_header)
                 if (!sps_header->data) {
                     printf("failed to allocate memory for sps header\n");
                     mpp_packet_deinit(&packet);
-                    return 1;
+                    return 0;
                 }
                 sps_header->size = len;
                 memcpy(sps_header->data, ptr, len);
@@ -504,51 +515,27 @@ static _Bool get_header(MppContext *mpp_enc_data, SpsHeader *sps_header)
  * @param mpp_enc_data  MPP 上下文
  * @return _Bool        成功返回 true，失败返回 false
  */
-_Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data)
+_Bool encode_mpp_frame(MppContext *mpp_enc_data)
 {
     MPP_RET ret = MPP_OK;
     MppFrame  frame  = NULL;
     MppPacket packet = NULL;
     MppMeta   meta   = NULL;
-    MppBuffer frm_buf_ext = NULL;
-    MppBufferGroup ext_grp = NULL;
-    RK_U32 eoi = 1;
+    RK_U32 eoi = 1;          // MPP_POLL_BLOCK 已确保 encode_get_packet 同步阻塞，
+                              // eoi=1 让循环处理完一个 packet 就正确退出
     static int frame_log_counter = 0;
 
-    if (!mpp_enc_data || !mpp_enc_data->pkt_buf) {
-        printf("[mpp] pkt_buf is NULL\n");
+    if (!mpp_enc_data || !mpp_enc_data->pkt_buf || !mpp_enc_data->frm_buf) {
+        printf("[mpp] pkt_buf or frm_buf is NULL\n");
         return 0;
     }
 
-    // 1. 创建 EXT_DMA 类型的 external group，专用于外部 fd import
-    ret = mpp_buffer_group_get_external(&ext_grp, MPP_BUFFER_TYPE_EXT_DMA);
-    if (ret || !ext_grp) {
-        printf("[mpp] mpp_buffer_group_get_external failed, ret=%d\n", ret);
-        return 0;
-    }
+    mpp_buffer_sync_end(mpp_enc_data->frm_buf);
 
-    // 2. 把外部 dmabuf fd 导入为 MppBuffer（不拷贝数据）
-    MppBufferInfo buf_info;
-    memset(&buf_info, 0, sizeof(buf_info));
-    buf_info.type  = MPP_BUFFER_TYPE_EXT_DMA;
-    buf_info.fd    = fd;
-    buf_info.size  = (size_t)size;
-    buf_info.ptr   = NULL;
-
-    ret = mpp_buffer_import_with_tag(ext_grp, &buf_info, &frm_buf_ext,
-                                     "nv12_ext_fd", __FUNCTION__);
-    if (ret || !frm_buf_ext) {
-        printf("[mpp] mpp_buffer_import_with_tag failed, ret=%d\n", ret);
-        mpp_buffer_group_put(ext_grp);
-        return 0;
-    }
-
-    // 2. 初始化并设置编码帧，直接绑定外部 buffer
+    // 2. 初始化并设置编码帧，直接绑定内部 buffer
     ret = mpp_frame_init(&frame);
     if (ret) {
         printf("[mpp] mpp_frame_init failed\n");
-        mpp_buffer_put(frm_buf_ext);
-        mpp_buffer_group_put(ext_grp);
         return 0;
     }
 
@@ -557,7 +544,7 @@ _Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data)
     mpp_frame_set_hor_stride(frame, mpp_enc_data->hor_stride);
     mpp_frame_set_ver_stride(frame, mpp_enc_data->ver_stride);
     mpp_frame_set_fmt(frame,        mpp_enc_data->fmt);
-    mpp_frame_set_buffer(frame,     frm_buf_ext);   // ← 直接用外部 fd 的 buffer
+    mpp_frame_set_buffer(frame,     mpp_enc_data->frm_buf);   // ← 直接用内部的 frm_buf
     mpp_frame_set_eos(frame,        mpp_enc_data->frm_eos);
 
     // 3. 绑定输出 packet
@@ -571,35 +558,33 @@ _Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data)
     if (ret) {
         printf("[mpp] encode_put_frame failed, ret=%d\n", ret);
         mpp_frame_deinit(&frame);
-        mpp_buffer_put(frm_buf_ext);
-        mpp_buffer_group_put(ext_grp);
         return 0;
     }
     mpp_frame_deinit(&frame);
-    // 编码器持有引用，这里减一；编码器完成后会自动释放
-    mpp_buffer_put(frm_buf_ext);
 
     // 5. 取编码结果
     do {
         ret = mpp_enc_data->mpi->encode_get_packet(mpp_enc_data->ctx, &packet);
         if (ret) {
             printf("[mpp] encode_get_packet failed, ret=%d\n", ret);
-            mpp_buffer_group_put(ext_grp);
             return 0;
         }
 
         if (packet) {
-            void   *ptr = mpp_packet_get_pos(packet);
+            void   *ptr_pkt = mpp_packet_get_pos(packet);
             size_t  len = mpp_packet_get_length(packet);
 
             mpp_enc_data->pkt_eos = mpp_packet_get_eos(packet);
 
             if (mpp_enc_data->write_frame)
-                mpp_enc_data->write_frame(packet, ptr, (int)len);
+                mpp_enc_data->write_frame(packet, ptr_pkt, (int)len);
 
+            // 分片模式下更新 eoi；非分片模式（H.265 默认）一个 packet 即为完整一帧
             if (mpp_packet_is_partition(packet)) {
                 eoi = mpp_packet_is_eoi(packet);
                 mpp_enc_data->frm_pkt_cnt = eoi ? 0 : mpp_enc_data->frm_pkt_cnt + 1;
+            } else {
+                eoi = 1; // 非分片：收到 packet 即表示完整一帧
             }
 
             if ((frame_log_counter++ % 30) == 0)
@@ -611,8 +596,6 @@ _Bool process_image_fd(int fd, int size, MppContext *mpp_enc_data)
             mpp_enc_data->frame_count += eoi;
         }
     } while (!eoi);
-
-    mpp_buffer_group_put(ext_grp);
 
     if (mpp_enc_data->frame_num > 0 &&
         mpp_enc_data->frame_count >= mpp_enc_data->frame_num)

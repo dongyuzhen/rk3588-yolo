@@ -1,5 +1,6 @@
 #include "yolov5s.h"
 #include "post_process.h"
+#include "bench/perf_timer.h"
 
 #include <chrono>
 #include <sstream>
@@ -12,9 +13,9 @@
 // 打印 tensor 属性（调试用）
 static void print_tensor_attr(rknn_tensor_attr *attr)
 {
-    string shape_str = attr->n_dims < 1 ? "" : to_string(attr->dims[0]);
+    std::string shape_str = attr->n_dims < 1 ? "" : std::to_string(attr->dims[0]);
     for (int i = 1; i < attr->n_dims; i++)
-        shape_str += "," + to_string(attr->dims[i]);
+        shape_str += "," + std::to_string(attr->dims[i]);
     printf("  index=%d name=%s dims=[%s] size=%d fmt=%d type=%d\n",
            attr->index, attr->name, shape_str.c_str(), attr->size, attr->fmt, attr->type);
 }
@@ -122,6 +123,14 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
         ret = rknn_query(context, RKNN_QUERY_OUTPUT_ATTR, &output_attrs[i], sizeof(output_attrs[i]));
         if (ret != RKNN_SUCC)
             printf("rknn_query OUTPUT_ATTR[%d] failed, ret=%d\n", i, ret);
+            
+        // 打印模型真实的输出属性，用于排查 UINT8 / INT8 错乱导致的精度溢出 Bug
+        printf("output[%d]: ", i);
+        print_tensor_attr(&output_attrs[i]);
+
+        // // =============== 必须同时强制 NHWC 和 INT8 ===============
+        output_attrs[i].fmt = RKNN_TENSOR_NHWC; 
+        output_attrs[i].type = RKNN_TENSOR_INT8; // 【取消注释！核心修复！】强迫硬件吐出 8 位整数！
     }
 
     // 解析模型输入尺寸（支持 NCHW / NHWC）
@@ -253,38 +262,49 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
 
     // ---------- 2. RGA 硬件 Letterbox 预处理 ----------
     {
+        PERF_SCOPE("RGA_preprocess");
         // import V4L2 dmabuf（每帧变化，必须 per-frame import）
-        rga_buffer_handle_t h_yuyv = importbuffer_fd(dmabuf_fd, img_width, img_height, RK_FORMAT_YUYV_422);
-        if (!h_yuyv)
+        rga_buffer_handle_t h_nv12 = importbuffer_fd(dmabuf_fd, img_width, img_height, RK_FORMAT_YCbCr_420_SP);
+        if (!h_nv12)
         {
-            printf("[yolo] RGA import yuyv fd failed\n");
+            printf("[yolo] RGA import nv12 fd failed\n");
             return -1;
         }
 
-        rga_buffer_t src_yuyv = wrapbuffer_handle(h_yuyv, img_width, img_height, RK_FORMAT_YUYV_422);
+        rga_buffer_t src_nv12 = wrapbuffer_handle(h_nv12, img_width, img_height, RK_FORMAT_YCbCr_420_SP);
         rga_buffer_t dst_model = wrapbuffer_handle(model_handle_, model_width, model_height, RK_FORMAT_RGB_888);
 
-        // 1. 填充目标内存为灰色 (114, 114, 114)
-        // imfill 在 RGA3 上不支持 RGB888 目标格式（Invalid argument），
-        // 改用 CPU memset 写入同一块 DMA 内存的虚拟地址，开销更低。
-        memset(input_mem_->virt_addr, 114, (size_t)model_width * model_height * 3);
+        // 1. 精确补边填充灰色 (114, 114, 114)，将 CPU Uncached 写入量降到最低
+        uint8_t* dst_ptr = static_cast<uint8_t*>(input_mem_->virt_addr);
+        if (pad_top > 0) {
+            memset(dst_ptr, 114, pad_top * model_width * 3);
+        }
+        if (pad_bottom > 0) {
+            memset(dst_ptr + (model_height - pad_bottom) * model_width * 3, 114, pad_bottom * model_width * 3);
+        }
+        if (pad_left > 0 || pad_right > 0) {
+            for (int r = pad_top; r < model_height - pad_bottom; r++) {
+                if (pad_left > 0) memset(dst_ptr + r * model_width * 3, 114, pad_left * 3);
+                if (pad_right > 0) memset(dst_ptr + r * model_width * 3 + (model_width - pad_right) * 3, 114, pad_right * 3);
+            }
+        }
 
-        // 2. 利用 improcess 一步完成 YUYV->RGB888 色彩转换、缩放并放置在居中区域
+        // 2. 利用 improcess 一步完成 NV12->RGB888 色彩转换、缩放并放置在居中区域
         im_rect srect = {0, 0, img_width, img_height};
         im_rect drect = {pad_left, pad_top, resized_width, resized_height};
         im_rect prect = {0, 0, 0, 0};
         rga_buffer_t empty_pat;
         memset(&empty_pat, 0, sizeof(rga_buffer_t));
         
-        IM_STATUS rga_ret = improcess(src_yuyv, dst_model, empty_pat, srect, drect, prect, IM_SYNC);
+        IM_STATUS rga_ret = improcess(src_nv12, dst_model, empty_pat, srect, drect, prect, IM_SYNC);
         if (rga_ret != IM_STATUS_SUCCESS)
         {
             printf("[yolo] RGA improcess Letterbox failed: %s\n", imStrError((IM_STATUS)rga_ret));
-            releasebuffer_handle(h_yuyv);
+            releasebuffer_handle(h_nv12);
             return -1;
         }
 
-        releasebuffer_handle(h_yuyv);
+        releasebuffer_handle(h_nv12);
     }
 
     // [BENCH] OpenCV 等效路径（仅用于对比，正常运行时保持注释）
@@ -309,30 +329,51 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
     */
 
     // ---------- 3. NPU 推理 ----------
+    {
+        PERF_SCOPE("NPU_inference");
     ret = rknn_run(context, NULL);
     if (ret != RKNN_SUCC)
     {
         printf("[yolo] rknn_run failed, ret=%d\n", ret);
         return ret;
     }
+    } // NPU_inference scope
 
     // ---------- 4. 后处理 ----------
     {
-        vector<int32_t> qnt_zps;
-        vector<float> qnt_scales;
-        for (int i = 0; i < (int)num_tensors.n_output; i++)
-        {
-            qnt_zps.emplace_back(output_attrs[i].zp);
-            qnt_scales.emplace_back(output_attrs[i].scale);
+        PERF_SCOPE("Post_process");
+        // 【新增神仙逻辑】：根据 Tensor 内存大小，动态识别 80x80, 40x40, 20x20 的输出节点
+        struct OutputNode {
+            int8_t* ptr;
+            int32_t zp;
+            float scale;
+            int size;
+        };
+        std::vector<OutputNode> nodes;
+        for (int i = 0; i < (int)num_tensors.n_output; i++) {
+            nodes.push_back({
+                (int8_t *)output_mems_[i]->virt_addr,
+                output_attrs[i].zp,
+                output_attrs[i].scale,
+                (int)output_attrs[i].size
+            });
         }
+        
+        // 按 size 从大到小排序 (保证顺序必定是：80x80, 40x40, 20x20)
+        std::sort(nodes.begin(), nodes.end(), [](const OutputNode& a, const OutputNode& b) {
+            return a.size > b.size;
+        });
 
+        std::vector<int32_t> qnt_zps = {nodes[0].zp, nodes[1].zp, nodes[2].zp};
+        std::vector<float> qnt_scales = {nodes[0].scale, nodes[1].scale, nodes[2].scale};
+
+        // 传入经过严格排序后的指针
         post_process(
-            (int8_t *)output_mems_[0]->virt_addr,
-            (int8_t *)output_mems_[1]->virt_addr,
-            (int8_t *)output_mems_[2]->virt_addr,
+            nodes[0].ptr, nodes[1].ptr, nodes[2].ptr,
             model_height, model_width,
             BOX_THRESHOLD, NMS_THRESHOLD,
             scale, scale,
+            pad_left, pad_top,
             qnt_zps, qnt_scales,
             result_group);
     }

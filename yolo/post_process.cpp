@@ -6,6 +6,7 @@
 #include <fstream>
 #include <map>
 #include <algorithm>
+#include <mutex>
 
 using namespace std;
 
@@ -17,7 +18,7 @@ struct ProbArray
     float conf;
     int index;
 };
-cv::Mat test_img;
+
 static vector<string> labels;
 
 // Sigmoid 函数：必须用精确 expf()，逼近会导致坐标平方放大误差，画框抖动
@@ -103,13 +104,14 @@ int readLines(const char * LablePath, vector<string> &lable_vector, int maxLines
     if (!file.is_open())
     {
         std::cerr << "file " << LablePath << " can not open!" << endl;
+        return 0;
     }
 
     string line;
     while (getline(file, line))
     {
         lable_vector.emplace_back(line);
-        if (lable_vector.size() > static_cast<size_t>(maxLines))
+        if (lable_vector.size() >= static_cast<size_t>(maxLines))
         {
             break;
         }
@@ -124,7 +126,7 @@ int LoadLableName(const char * filepath, vector<string> &lable_vector, int num_l
     {
         // cout << "标签数量是 " << line_num << endl;
     }
-    std::cout << "labels.size()=" << labels.size() << std::endl;
+    std::cout << "labels.size()=" << lable_vector.size() << std::endl;
     return line_num;
 }
 
@@ -165,31 +167,31 @@ int process(int8_t *input, float *anchor, int grid_h, int grid_w, int model_heig
             vector<float> &boxes, vector<float> &objProbs, vector<int> &classID, float box_threshold, int32_t zp, float scale)
 {
     int validCount = 0;
-    int grid_len = grid_h * grid_w;
+    int channels_per_pixel = 3 * BOX_NUM_SIZE;
 
     float box_unsig = unsigmoid(box_threshold);
     int8_t box_int8 = qnt_f32_to_int8(box_unsig, zp, scale);
 
-	//循环3次是因为yolo推理有3个图像框
-    for (int a = 0; a < 3; a++)
+    // 针对 RKNN 硬件默认输出的 NHWC (内存结构为 [H, W, 3*BOX_NUM_SIZE])，进行 Cache 友好的连续寻址
+    for (int i = 0; i < grid_h; i++)
     {
-        for (int i = 0; i < grid_h; i++)
+        for (int j = 0; j < grid_w; j++)
         {
-            for (int j = 0; j < grid_w; j++)
+            int pixel_offset = (i * grid_w + j) * channels_per_pixel;
+            for (int a = 0; a < 3; a++)
             {
-            	
-                int8_t box_anchor_conf = input[(a * BOX_NUM_SIZE + 4) * grid_len + i * grid_w + j];
+                int anchor_offset = pixel_offset + a * BOX_NUM_SIZE;
+                int8_t box_anchor_conf = input[anchor_offset + 4];
                 if (box_anchor_conf > box_int8)
                 {
                     validCount++;
-                    int box_offt = (a * BOX_NUM_SIZE) * grid_len + i * grid_w + j;
-                    int8_t *box_p = input + box_offt;
+                    int8_t *box_p = input + anchor_offset;
                     
-                    // 反量化和 sigmoid 操作获取框的坐标信息
-                    float box_x = sigmoid(deqnt_int8_to_f32(*box_p, zp,scale)) * 2 - 0.5;
-                    float box_y = sigmoid(deqnt_int8_to_f32(*(box_p + 1 * grid_len), zp,scale)) * 2 - 0.5;
-                    float box_w = sigmoid(deqnt_int8_to_f32(*(box_p + 2 * grid_len), zp,scale)) * 2.0;
-                    float box_h = sigmoid(deqnt_int8_to_f32(*(box_p + 3 * grid_len), zp,scale)) * 2.0;
+                    // 反量化和 sigmoid 操作获取框的坐标信息 (NHWC 下连续读取)
+                    float box_x = sigmoid(deqnt_int8_to_f32(*(box_p + 0), zp, scale)) * 2 - 0.5;
+                    float box_y = sigmoid(deqnt_int8_to_f32(*(box_p + 1), zp, scale)) * 2 - 0.5;
+                    float box_w = sigmoid(deqnt_int8_to_f32(*(box_p + 2), zp, scale)) * 2.0;
+                    float box_h = sigmoid(deqnt_int8_to_f32(*(box_p + 3), zp, scale)) * 2.0;
 
                     // 计算框的坐标
                     box_x = (box_x + j) * (float)stride;
@@ -206,11 +208,11 @@ int process(int8_t *input, float *anchor, int grid_h, int grid_w, int model_heig
                     boxes.emplace_back(box_h);
                     
                     // 获取最大类别概率及对应的类别 ID
-                    int8_t maxClassProb = *(box_p + 5 * grid_len);
+                    int8_t maxClassProb = *(box_p + 5);
                     int maxClassId = 0;
                     for (int k = 1; k < OBJ_CLASS_NUM; k++)
                     {
-                        int8_t prob = *(box_p + (5 + k) * grid_len);
+                        int8_t prob = *(box_p + 5 + k);
                         if (prob > maxClassProb)
                         {
                             maxClassProb = prob;
@@ -218,7 +220,22 @@ int process(int8_t *input, float *anchor, int grid_h, int grid_w, int model_heig
                         }
                     }
 
-                    objProbs.emplace_back(sigmoid(deqnt_int8_to_f32(maxClassProb, zp, scale)));
+                    // 核心修复：YOLOv5 的最终置信度必须是 obj_conf * cls_conf
+                    float obj_conf = sigmoid(deqnt_int8_to_f32(box_anchor_conf, zp, scale));
+                    float cls_conf = sigmoid(deqnt_int8_to_f32(maxClassProb, zp, scale));
+                    float final_conf = obj_conf * cls_conf;
+                    
+                    // 严格过滤最终置信度
+                    if (final_conf < box_threshold) {
+                        boxes.pop_back();
+                        boxes.pop_back();
+                        boxes.pop_back();
+                        boxes.pop_back();
+                        validCount--; // 回退之前加上的 validCount
+                        continue;
+                    }
+
+                    objProbs.emplace_back(final_conf);
                     classID.emplace_back(maxClassId);
                 }
             }
@@ -242,26 +259,19 @@ inline static int clamp(float val, int min, int max) { return val > min? (val < 
 int post_process(int8_t *output0, int8_t *output1, int8_t *output2,
                  int model_height, int model_width, float box_threshold,
                  float nms_threshold, float scale_w, float scale_h,
+                 int pad_left, int pad_top,
                  std::vector<int32_t>& qnt_zps, std::vector<float>& qnt_scales, detect_result_group_t &result_group)
 {
-    // 1. 加载标签
-    static bool g_labels_loaded = false;
-    if(!g_labels_loaded)
-    {
-        // 只有第一次才加载标签文件
-        int nlines = LoadLableName(LABLE_PATH, labels, OBJ_CLASS_NUM);
-        g_labels_loaded = true;
-    }
-    else
-    {
-        // 后续不再重复加载
-        // 如果你仍想打印，可以查看 labels.size() 之类
-        // cout << "已加载过标签, labels.size()=" << labels.size() << endl;
-    }
-    // for (string &s : labels)
-    // {
-    //     cout << "lable name " << s << endl;
-    // }
+    // 【核心修复】：必须在入口处清空 box_count！
+    // 否则当图像中没有任何目标时，有效检测数为 0 会提前 return，
+    // 导致未初始化的 result_group 携带着线程池上一帧的“幽灵残影”返回给绘制线程。
+    result_group.box_count = 0;
+
+    // 1. 加载标签 (使用 std::call_once 保证多线程并发下绝对的线程安全)
+    static std::once_flag flag;
+    std::call_once(flag, [&]() {
+        LoadLableName(LABLE_PATH, labels, OBJ_CLASS_NUM);
+    });
     
     // 示例：量化和反量化测试
     //int8_t int8_num = qnt_f32_to_int8(1.5, 1, 8.0f/255.0f);
@@ -302,7 +312,7 @@ int post_process(int8_t *output0, int8_t *output1, int8_t *output2,
 
 
     int validCount = validCount0 + validCount1 + validCount2;
-    if (validCount < 0) {
+    if (validCount == 0) {
         return 0;
     }
 
@@ -356,17 +366,31 @@ int post_process(int8_t *output0, int8_t *output1, int8_t *output2,
         float xmax      = detect_boxes[4*n + 2] + xmin;
         float ymax      = detect_boxes[4*n + 3] + ymin;
         float box_conf  = objProbs[i];
+        
+        // 【新增终极拦截】：把乘积后低于阈值的残次品彻底杀掉！
+        if (box_conf < box_threshold) {
+            continue;
+        }
+
         int id          = classID[n];
 
-        result_group.result[count].box.xmin = (int)(clamp(xmin, 0, model_width) / scale_w);
-        result_group.result[count].box.ymin = (int)(clamp(ymin, 0, model_height) / scale_h);
-        result_group.result[count].box.xmax = (int)(clamp(xmax, 0, model_width) / scale_w);
-        result_group.result[count].box.ymax = (int)(clamp(ymax, 0, model_height) / scale_h);
+        // 1. 限制在模型输入分辨率范围内
+        xmin = clamp(xmin, 0, model_width);
+        ymin = clamp(ymin, 0, model_height);
+        xmax = clamp(xmax, 0, model_width);
+        ymax = clamp(ymax, 0, model_height);
+
+        // 2. 映射回原图（必须先减去 Padding，再除以 Scale）
+        result_group.result[count].box.xmin = (int)((xmin - pad_left) / scale_w);
+        result_group.result[count].box.ymin = (int)((ymin - pad_top) / scale_h);
+        result_group.result[count].box.xmax = (int)((xmax - pad_left) / scale_w);
+        result_group.result[count].box.ymax = (int)((ymax - pad_top) / scale_h);
         result_group.result[count].box_conf = box_conf;
 
         const char *label_temp = labels[id].c_str();
-        // 将类别名称复制到检测结果组中
+        // 将类别名称复制到检测结果组中（保证 null 终止，防止 UB）
         strncpy(result_group.result[count].label, label_temp, 32);
+        result_group.result[count].label[31] = '\0';
 
         // printf("%s\n", labels[id].c_str());
         count++;

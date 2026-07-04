@@ -15,8 +15,7 @@
 #include <exception>
 #include <future>
 
-using namespace std;
-using namespace cv;
+
 
 struct ProcessResult {
     detect_result_group_t detection_results;
