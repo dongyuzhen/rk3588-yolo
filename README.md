@@ -66,7 +66,24 @@ sudo apt install -y v4l-utils ffmpeg
 
 > Rockchip MPP / RKNN / RGA 库已预置在 `3rdparty/` 目录下，无需额外安装。
 
-### 3. 编译
+### 3. 配置第三方库
+
+RKNN 和 RGA 的 `.so` 库文件未包含在仓库中，需自行获取后放入 `3rdparty/`：
+
+```bash
+# 方式一：从系统安装 (推荐，Rockchip 板子通常预装)
+# CMake 会自动查找 3rdparty/ 目录，无需额外操作
+ls /usr/lib/librknnrt.so   # 确认已安装
+ls /usr/lib/librga.so      # 确认已安装
+
+# 方式二：手动下载放入 3rdparty
+# 1. librknnrt.so → 3rdparty/librknn_api/aarch64/
+#    https://github.com/airockchip/rknn-toolkit2 (librknnrt.so)
+# 2. librga.so    → 3rdparty/rga/RK3588/lib/Linux/aarch64/
+#    https://github.com/airockchip/librga (源码编译或用预编译包)
+```
+
+### 4. 编译
 
 ```bash
 # 生产模式 (零开销)
@@ -77,7 +94,7 @@ cmake .. && make -j$(nproc)
 cmake -DBENCH_MODE=ON .. && make -j$(nproc)
 ```
 
-### 4. 运行
+### 5. 运行
 
 ```bash
 # 最简测试：不推流，跑 1500 帧自动退出
