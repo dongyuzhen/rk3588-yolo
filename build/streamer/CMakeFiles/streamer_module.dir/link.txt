@@ -1,2 +1,0 @@
-/usr/bin/ar qc libstreamer_module.a CMakeFiles/streamer_module.dir/rtsp.cpp.o
-/usr/bin/ranlib libstreamer_module.a

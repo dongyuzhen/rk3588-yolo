@@ -1,2 +1,0 @@
-/usr/bin/ar qc libmpp_module.a CMakeFiles/mpp_module.dir/mpp.c.o CMakeFiles/mpp_module.dir/mpp_encoder.cpp.o
-/usr/bin/ranlib libmpp_module.a
