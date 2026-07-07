@@ -86,11 +86,6 @@ public:
         return q.empty();
     }
 
-    size_t size() const
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return q.size();
-    }
 
 private:
     size_t max_size;

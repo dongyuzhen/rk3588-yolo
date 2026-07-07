@@ -2,13 +2,12 @@
 #include "post_process.h"
 #include "bench/perf_timer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <cstdio>
-#include <fcntl.h>
-#include <unistd.h>
 
 // 打印 tensor 属性（调试用）
 static void print_tensor_attr(rknn_tensor_attr *attr)
@@ -53,7 +52,7 @@ unsigned char *Yolov5s::load_model(const char *model_path, unsigned int &model_s
 
 Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
     : context(0), model_size(0), model_data(nullptr),
-      model_height(0), model_width(0), model_channel(0),
+      model_height(0), model_width(0),
       img_width(img_w), img_height(img_h)
 {
     int ret;
@@ -136,7 +135,6 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
     // 解析模型输入尺寸（支持 NCHW / NHWC）
     if (input_attrs[0].fmt == RKNN_TENSOR_NCHW)
     {
-        model_channel = input_attrs[0].dims[1];
         model_height = input_attrs[0].dims[2];
         model_width = input_attrs[0].dims[3];
     }
@@ -144,9 +142,8 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
     { // NHWC
         model_height = input_attrs[0].dims[1];
         model_width = input_attrs[0].dims[2];
-        model_channel = input_attrs[0].dims[3];
     }
-    printf("  model input: %dx%dx%d\n", model_width, model_height, model_channel);
+    printf("  model input: %dx%d\n", model_width, model_height);
 
     // 计算 letterbox 参数
     scale = std::min((float)model_width / img_width, (float)model_height / img_height);
@@ -164,16 +161,6 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
     pad_right = model_width - resized_width - pad_left;
     pad_bottom = model_height - resized_height - pad_top;
 
-    // 分配中间 RGB888 缓冲（img_width × img_height × 3），用于 YUYV→RGB 色彩转换
-    // rknn_create_mem 内部使用 DMA 堆，fd 可直接被 RGA importbuffer_fd 使用
-    size_t mid_size = (size_t)img_width * img_height * 3;
-    mid_mem_ = rknn_create_mem(context, mid_size);
-    if (!mid_mem_)
-    {
-        printf("[yolo] rknn_create_mem mid_mem failed\n");
-        return;
-    }
-
     // 持久化分配 input/output 内存，避免每帧 create/destroy 引起 cache cold miss
     input_attrs[0].type = RKNN_TENSOR_UINT8;
     input_attrs[0].fmt = RKNN_TENSOR_NHWC;
@@ -190,12 +177,11 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
         return;
     }
 
-    // 缓存 RGA handle：mid_mem_ fd 和 input_mem_ fd 从不变化，import 一次全生命周期复用
-    mid_handle_ = importbuffer_fd(mid_mem_->fd, img_width, img_height, RK_FORMAT_RGB_888);
+    // 缓存 RGA handle：input_mem_ fd 从不变化，import 一次全生命周期复用
     model_handle_ = importbuffer_fd(input_mem_->fd, model_width, model_height, RK_FORMAT_RGB_888);
-    if (!mid_handle_ || !model_handle_)
+    if (!model_handle_)
     {
-        printf("[yolo] RGA handle cache failed: mid=%d model=%d\n", (int)mid_handle_, (int)model_handle_);
+        printf("[yolo] RGA handle cache failed: model=%d\n", (int)model_handle_);
         return;
     }
 
@@ -220,8 +206,6 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index, int img_w, int img_h)
 // -------------------- 析构函数 --------------------
 Yolov5s::~Yolov5s()
 {
-    if (mid_handle_)
-        releasebuffer_handle(mid_handle_);
     if (model_handle_)
         releasebuffer_handle(model_handle_);
 
@@ -234,11 +218,6 @@ Yolov5s::~Yolov5s()
     {
         rknn_destroy_mem(context, input_mem_);
         input_mem_ = nullptr;
-    }
-    if (mid_mem_)
-    {
-        rknn_destroy_mem(context, mid_mem_);
-        mid_mem_ = nullptr;
     }
     if (context)
         rknn_destroy(context);
@@ -378,38 +357,5 @@ int Yolov5s::inference_image(int dmabuf_fd, detect_result_group_t &result_group)
             result_group);
     }
 
-    return 0;
-}
-
-// -------------------- 绘制检测框 --------------------
-// orig_img：原始分辨率的 BGR Mat（img_width × img_height）
-int Yolov5s::draw_result(cv::Mat &orig_img, detect_result_group_t &result_group)
-{
-    for (int i = 0; i < result_group.box_count; i++)
-    {
-        int xmin = result_group.result[i].box.xmin;
-        int ymin = result_group.result[i].box.ymin;
-        int xmax = result_group.result[i].box.xmax;
-        int ymax = result_group.result[i].box.ymax;
-
-        cv::rectangle(orig_img, cv::Point(xmin, ymin), cv::Point(xmax, ymax),
-                      cv::Scalar(255, 0, 0, 255), 3);
-
-        std::stringstream ss;
-        ss << std::fixed << std::setprecision(2)
-           << result_group.result[i].label << ":"
-           << result_group.result[i].box_conf * 100 << " %";
-        std::string img_label = ss.str();
-
-        const double font_scale = 1.1;
-        cv::Point text_org(xmin, std::max(20, ymin - 12));
-
-        // 黑色描边
-        cv::putText(orig_img, img_label, text_org, cv::FONT_HERSHEY_SIMPLEX,
-                    font_scale, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
-        // 黄色正文
-        cv::putText(orig_img, img_label, text_org, cv::FONT_HERSHEY_SIMPLEX,
-                    font_scale, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
-    }
     return 0;
 }

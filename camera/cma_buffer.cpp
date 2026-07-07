@@ -14,12 +14,6 @@ CmaBuffer::~CmaBuffer() {
     release();
 }
 
-CmaBufferPool::CmaBufferPool(int fd, bool owns_fd)
-{
-    heap_fd_ = fd;
-    owns_fd_ = owns_fd;
-}
-
 CmaBuffer::CmaBuffer(CmaBuffer&& other) noexcept {
     // 转移所有权：接管 other 的 fd/addr/size
     fd_ = other.fd_;
@@ -103,32 +97,6 @@ void CmaBuffer::release() {
     tag_.clear();
 }
 
-bool CmaBuffer::syncStartRead() const {
-    if (fd_ < 0) return false;
-
-    // CPU 读前同步：保证设备写入数据对 CPU 可见
-    dma_buf_sync sync_start{};
-    sync_start.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-    if (ioctl(fd_, DMA_BUF_IOCTL_SYNC, &sync_start) < 0) {
-        std::perror("DMA_BUF_IOCTL_SYNC START");
-        return false;
-    }
-    return true;
-}
-
-bool CmaBuffer::syncEndRead() const {
-    if (fd_ < 0) return false;
-
-    // CPU 读后同步：结束本次 CPU 读访问区间
-    dma_buf_sync sync_end{};
-    sync_end.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-    if (ioctl(fd_, DMA_BUF_IOCTL_SYNC, &sync_end) < 0) {
-        std::perror("DMA_BUF_IOCTL_SYNC END");
-        return false;
-    }
-    return true;
-}
-
 bool CmaBuffer::syncStartWrite() const {
     if (fd_ < 0) return false;
 
@@ -153,36 +121,4 @@ bool CmaBuffer::syncEndWrite() const {
         return false;
     }
     return true;
-}
-
-CmaBufferPool::~CmaBufferPool() {
-    clear();
-    // 仅当本池拥有 heap_fd_ 时才关闭，避免外部调用方再次 close 导致双重关闭
-    if (owns_fd_ && heap_fd_ >= 0) {
-        close(heap_fd_);
-        heap_fd_ = -1;
-    }
-}
-
-bool CmaBufferPool::init(size_t count,size_t each_size, const std::string& tag_prefix) {
-    // 允许重复 init：先清空旧池
-    clear();
-
-    buffers_.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        CmaBuffer b;
-        if (!b.allocate(heap_fd_, each_size, tag_prefix + "_" + std::to_string(i))) {
-            // 任一失败，整体回滚
-            clear();
-            return false;
-        }
-        buffers_.emplace_back(std::move(b));
-    }
-
-    return true;
-}
-
-void CmaBufferPool::clear() {
-    // vector clear 会触发每个 CmaBuffer 析构，从而自动 release
-    buffers_.clear();
 }

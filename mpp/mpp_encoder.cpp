@@ -55,13 +55,6 @@ int get_mpp_input_fd() {
     return -1;
 }
 
-size_t get_mpp_input_size() {
-    if (g_mpp_enc_ctx.is_initialized && g_mpp_enc_ctx.mpp_ctx) {
-        return g_mpp_enc_ctx.mpp_ctx->frame_size;
-    }
-    return 0;
-}
-
 void begin_mpp_input_sync() {
     if (g_mpp_enc_ctx.is_initialized && g_mpp_enc_ctx.mpp_ctx && g_mpp_enc_ctx.mpp_ctx->frm_buf) {
         mpp_buffer_sync_begin(g_mpp_enc_ctx.mpp_ctx->frm_buf);

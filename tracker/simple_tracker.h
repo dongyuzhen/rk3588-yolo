@@ -169,9 +169,6 @@ public:
         return output;
     }
 
-    // 当前活跃 Track 数（调试用）
-    int active_count() const { return static_cast<int>(tracks_.size()); }
-
 private:
     std::vector<Track> tracks_;
     int next_id_ = 1;

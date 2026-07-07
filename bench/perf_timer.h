@@ -110,20 +110,6 @@ public:
         std::cout << "[Perf] CSV written to " << path << std::endl;
     }
 
-    // ── 重置所有统计 ───────────────────────────────────────────────
-    static void reset() {
-        std::lock_guard<std::mutex> lk(mutex_);
-        records_.clear();
-    }
-
-    // ── 获取采样总数（用于判断是否该输出报告） ──────────────────────
-    static int total_samples() {
-        std::lock_guard<std::mutex> lk(mutex_);
-        int n = 0;
-        for (auto& p : records_) n += p.second.count;
-        return n;
-    }
-
 private:
     static inline void record(const std::string& name, double ms) {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -159,25 +145,13 @@ private:
 #define PERF_REPORT(title) \
     PerfTimer::report(title)
 
-#define PERF_RESET() \
-    PerfTimer::reset()
-
 #define PERF_CSV(path) \
     PerfTimer::write_csv(path)
-
-#define PERF_START(name) \
-    auto _perf_t0_##__COUNTER__ = PerfTimer::start()
-
-#define PERF_STOP(name, t0_var) \
-    PerfTimer::stop(name, t0_var)
 
 #else  // ── BENCH_MODE OFF: 全部编译剔除 ────────────────────────────
 
 #define PERF_SCOPE(name)       ((void)0)
 #define PERF_REPORT(title)     ((void)0)
-#define PERF_RESET()           ((void)0)
 #define PERF_CSV(path)         ((void)0)
-#define PERF_START(name)       0
-#define PERF_STOP(name, t0)    ((void)0)
 
 #endif

@@ -249,7 +249,6 @@ bool V4L2Camera::captureFrame(FramePacket& out_packet, int poll_timeout_ms) {
 
     // 填充输出包：调用方只读使用
     out_packet.data = static_cast<const uint8_t*>(buffers_[buf.index].start);
-    out_packet.bytes_used = static_cast<size_t>((buf_type_ == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? buf.m.planes[0].bytesused : buf.bytesused);
     out_packet.buffer_index = buf.index;
     out_packet.dmabuf_fd = buffers_[buf.index].dmabuf_fd;
     out_packet.valid = true;
@@ -318,11 +317,6 @@ void V4L2Camera::closeDevice() {
 
         close(fd_);
         fd_ = -1;
-    }
-
-    if (heap_fd_ >= 0) {
-        close(heap_fd_);
-        heap_fd_ = -1;
     }
 
     is_streaming_ = false;

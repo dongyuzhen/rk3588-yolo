@@ -4,16 +4,6 @@
 #include <stdint.h>
 #include <string>
 #include <vector>
-#include <fstream>
-#include <iostream>
-#include <math.h>
-#include <map>
-#include <algorithm>
-#include <opencv2/opencv.hpp>
-
-#include <opencv2/core.hpp>
-#include <opencv2/highgui.hpp>
-#include <opencv2/imgproc.hpp>
 
 #define OBJ_NUM_MAX_SIZE        64
 #define OBJ_CLASS_NUM 5

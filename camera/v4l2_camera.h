@@ -7,14 +7,11 @@
 
 #include <linux/videodev2.h>
 
-#include "cma_buffer.h"
-
 typedef struct FramePacket {
-    const uint8_t* data{nullptr}; // 指向 CMA 映射地址，直到 releaseFrame 前有效，已经零拷贝到用户态
-    size_t bytes_used{0};           // 实际数据长度（可能小于缓冲大小）
-    uint32_t buffer_index{0};       // 对应 V4L2 buffer slot index/后续是captureFrame/releaseFrame的索引
-    int dmabuf_fd{-1};                  // 对应 CMA buffer 的 dmabuf fd
-    bool valid{false};              //包是否有效（captureFrame 成功时为 true，失败或 releaseFrame 后为 false）
+    const uint8_t* data{nullptr};     // MMAP 映射地址，releaseFrame 前有效
+    uint32_t buffer_index{0};         // V4L2 buffer index
+    int dmabuf_fd{-1};                // DMA-BUF fd, 供 RGA/MPP 零拷贝
+    bool valid{false};                // 帧是否有效
 } FramePacket_t;
 
 // V4L2 相机封装（MMAP + DMABUF Export 版本）：
@@ -71,7 +68,6 @@ private:
     };
 
     int fd_{-1};
-    int heap_fd_{-1};
     int width_{0};
     int height_{0};
     int buffer_num_{0};

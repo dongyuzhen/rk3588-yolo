@@ -62,8 +62,7 @@ MppContext * alloc_mpp_context()
         return NULL;
     }
 
-    ctx->work_mode = 0;
-    ctx->init_mpp = init_mpp;
+        ctx->init_mpp = init_mpp;
     ctx->close = mpp_close;
     ctx->get_header = get_header;
     ctx->encode_mpp_frame = encode_mpp_frame;
@@ -151,20 +150,9 @@ static void mpp_close(MppContext* ctx)
 
 /**
  * @brief 获取当前SoC类型
- * 
- * 返回当前使用的Rockchip SoC类型
- * 目前固定返回RK3588，可根据实际需求修改
- * 
- * @return RockchipSocType 返回SoC类型枚举值
- */
-static int mpp_get_soc_type()
-{
-        return ROCKCHIP_SOC_RK3588;
-}
-
 /**
  * @brief 初始化MPP编码器
- * 
+ *
  * 该函数完成MPP编码器的完整初始化流程，包括：
  * 1. 设置基本编码参数（分辨率、格式等）
  * 2. 初始化缓冲区
@@ -236,7 +224,7 @@ static int init_mpp(MppContext *mpp_enc_data)
         printf("get mpp buffer group\n");
     }
 
-    // 分配输入帧缓冲区，这里由于并没有使用FPC，所以frame_size并不需要加上header_size
+    // 分配输入帧缓冲区
     printf("mpp: about to get frm_buf, buf_grp=%p, frame_size=%zu\n", mpp_enc_data->buf_grp, mpp_enc_data->frame_size);
     fflush(stdout);
     ret = mpp_buffer_get(mpp_enc_data->buf_grp, &mpp_enc_data->frm_buf, mpp_enc_data->frame_size);
@@ -410,7 +398,6 @@ static int init_mpp(MppContext *mpp_enc_data)
 
     printf("\n缓冲区配置:\n");
     printf("  帧缓冲区大小: %zu bytes\n", mpp_enc_data->frame_size);
-    printf("  头信息大小: %zu bytes\n", mpp_enc_data->header_size);
 
     printf("=======================================\n\n");
 

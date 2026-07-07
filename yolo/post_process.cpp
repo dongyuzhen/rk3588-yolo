@@ -6,6 +6,8 @@
 #include <fstream>
 #include <map>
 #include <algorithm>
+#include <set>
+#include <cstring>
 #include <mutex>
 
 using namespace std;

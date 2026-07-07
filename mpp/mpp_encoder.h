@@ -13,7 +13,6 @@ int encode_mpp_frame();
 
 // 导出 MPP 内部 buffer 供外部（如 RGA）直接写入
 int get_mpp_input_fd();
-size_t get_mpp_input_size();
 void begin_mpp_input_sync();
 
 // 关闭编码器

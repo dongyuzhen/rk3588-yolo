@@ -14,8 +14,6 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <linux/dma-heap.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <csignal>
@@ -134,7 +132,6 @@ int g_nv12_heap_fd = -1;
 
 // 全局模块与队列
 V4L2Camera g_camera;
-std::unique_ptr<CmaBufferPool> g_pool;
 SafeQueue<CapturedFrame> g_readQueue(READ_QUEUE_CAP);
 SafeQueue<YoloOutputFrame> g_writeQueue(WRITE_QUEUE_CAP);
 SafeQueue<EncodedPacket> rtsp_queue(24);
